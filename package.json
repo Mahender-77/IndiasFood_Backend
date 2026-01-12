@@ -3,13 +3,14 @@
   "version": "1.0.0",
   "description": "",
   "main": "dist/server.js",
-  "scripts": {
-    "build": "npx tsc",
-    "start": "node dist/server.js",
-    "dev": "nodemon --exec ts-node server.ts",
-    "data:import": "ts-node seed.ts",
-    "data:destroy": "ts-node seed.ts -d"
-  },
+"scripts": {
+  "build": "node node_modules/typescript/bin/tsc",
+  "start": "node dist/server.js",
+  "dev": "nodemon --exec ts-node server.ts",
+  "data:import": "ts-node seed.ts",
+  "data:destroy": "ts-node seed.ts -d"
+},
+
   "keywords": [],
   "author": "",
   "license": "ISC",
