@@ -13,7 +13,7 @@ exports.createProductSchema = joi_1.default.object({
     shelfLife: joi_1.default.string().optional(),
     category: joi_1.default.string().pattern(/^[0-9a-fA-F]{24}$/).required(), // Validate as ObjectId
     countInStock: joi_1.default.number().min(0).required(),
-    videoUrl: joi_1.default.string().uri().optional(), // Optional video URL, validated as a URI
+    videoUrl: joi_1.default.string().uri().allow('').optional(), // Optional video URL, allow empty string
     isActive: joi_1.default.boolean().optional(),
 });
 exports.updateProductSchema = joi_1.default.object({

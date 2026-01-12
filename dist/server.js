@@ -20,14 +20,16 @@ app.use((0, cors_1.default)({
     credentials: true,
 }));
 app.use('/api', routes_1.default);
-// Basic error handling middleware
+// error handler
 app.use((err, req, res, next) => {
     console.error(err.stack);
     res.status(500).send('Something broke!');
 });
-// Error handler
-app.use((err, req, res, next) => {
-    console.error(err.stack);
-    res.status(500).send('Something broke!');
-});
-exports.default = app; // ✅ IMPORTANT
+// ⭐ Start server only locally
+if (process.env.NODE_ENV !== 'production') {
+    const PORT = process.env.PORT || 5000;
+    app.listen(PORT, () => {
+        console.log(`Server running on port ${PORT}`);
+    });
+}
+exports.default = app;
