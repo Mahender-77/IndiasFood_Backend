@@ -8,7 +8,7 @@ export const createProductSchema = Joi.object({
   shelfLife: Joi.string().optional(),
   category: Joi.string().pattern(/^[0-9a-fA-F]{24}$/).required(), // Validate as ObjectId
   countInStock: Joi.number().min(0).required(),
-  videoUrl: Joi.string().uri().optional(), // Optional video URL, validated as a URI
+  videoUrl: Joi.string().uri().allow('').optional(), // Optional video URL, allow empty string
   isActive: Joi.boolean().optional(),
 });
 

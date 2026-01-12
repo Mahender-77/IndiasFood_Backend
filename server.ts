@@ -5,7 +5,6 @@ import connectDB from './utils/db';
 import allRoutes from './routes';
 
 dotenv.config();
-
 connectDB();
 
 const app = express();
@@ -19,20 +18,20 @@ app.use(cors({
   credentials: true,
 }));
 
-
 app.use('/api', allRoutes);
 
-// Basic error handling middleware
+// error handler
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
   console.error(err.stack);
   res.status(500).send('Something broke!');
 });
 
+// ⭐ Start server only locally
+if (process.env.NODE_ENV !== 'production') {
+  const PORT = process.env.PORT || 5000;
+  app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+  });
+}
 
-// Error handler
-app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
-  console.error(err.stack);
-  res.status(500).send('Something broke!');
-});
-
-export default app; // ✅ IMPORTANT
+export default app;
