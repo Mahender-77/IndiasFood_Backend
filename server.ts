@@ -12,9 +12,13 @@ const app = express();
 
 app.use(express.json());
 app.use(cors({
-  origin: '*',
+  origin: [
+    'http://localhost:8080',
+    'https://your-frontend.vercel.app'
+  ],
   credentials: true,
 }));
+
 
 app.use('/api', allRoutes);
 
