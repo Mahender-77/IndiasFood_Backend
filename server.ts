@@ -10,13 +10,16 @@ connectDB();
 const app = express();
 
 app.use(express.json());
+const allowedOrigins =
+  process.env.NODE_ENV === 'production'
+    ? ['https://indias-food-front-end.vercel.app']
+    : ['http://localhost:8080'];
+
 app.use(cors({
-  origin: [
-    'http://localhost:8080',
-    'https://your-frontend.vercel.app'
-  ],
+  origin: allowedOrigins,
   credentials: true,
 }));
+
 
 app.use('/api', allRoutes);
 
