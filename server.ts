@@ -11,7 +11,10 @@ connectDB();
 const app = express();
 
 app.use(express.json());
-app.use(cors());
+app.use(cors({
+  origin: '*',
+  credentials: true,
+}));
 
 app.use('/api', allRoutes);
 
@@ -21,8 +24,11 @@ app.use((err: any, req: express.Request, res: express.Response, next: express.Ne
   res.status(500).send('Something broke!');
 });
 
-const PORT = process.env.PORT || 5000;
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+// Error handler
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  console.error(err.stack);
+  res.status(500).send('Something broke!');
 });
+
+export default app; // ✅ IMPORTANT
