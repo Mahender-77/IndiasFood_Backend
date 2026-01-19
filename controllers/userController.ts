@@ -2,9 +2,10 @@ import { Request, Response } from 'express';
 import User from '../models/User';
 import Product from '../models/Product';
 import Order from '../models/Order';
+import DeliverySettings from '../models/DeliverySettings';
 
 interface AuthenticatedRequest extends Request {
-  user?: any; // You might want to define a more specific User type
+  user?: any;
 }
 
 // @desc    Get user cart
@@ -23,59 +24,66 @@ export const getUserCart = async (req: AuthenticatedRequest, res: Response) => {
 // @route   POST /api/user/cart
 // @access  Private
 export const updateCart = async (req: AuthenticatedRequest, res: Response) => {
-  const { productId, qty } = req.body;
+  try {
+    const { productId, qty, selectedVariantIndex = 0 } = req.body;
 
-  console.log('Received cart update request:', { productId, qty, userId: req.user?._id });
-
-  if (!req.user || !req.user._id) {
-    console.error('User not authenticated or user ID missing in updateCart');
-    return res.status(401).json({ message: 'Not authorized, user ID missing' });
-  }
-
-  const user = await User.findById(req.user._id);
-
-  if (!user) {
-    console.error('User not found in DB for ID:', req.user._id);
-    return res.status(404).json({ message: 'User not found' });
-  }
-  console.log('Found user:', user.email);
-
-  const product = await Product.findById(productId);
-
-  if (!product) {
-    console.error('Product not found for ID:', productId);
-    return res.status(404).json({ message: 'Product not found' });
-  }
-  console.log('Found product:', product.name);
-
-  const itemIndex = user.cart.findIndex(
-    (item: any) => item.product.toString() === productId
-  );
-
-  if (itemIndex > -1) {
-    // Update quantity or remove item
-    if (qty > 0) {
-      user.cart[itemIndex].qty = qty;
-      console.log('Updated quantity for existing item:', productId, 'to', qty);
-    } else {
-      user.cart.splice(itemIndex, 1);
-      console.log('Removed item from cart:', productId);
+    if (!req.user || !req.user._id) {
+      return res.status(401).json({ message: 'Not authorized, user ID missing' });
     }
-  } else if (qty > 0) {
-    // Add new item
-    user.cart.push({ product: productId, qty });
-    console.log('Added new item to cart:', productId, 'with quantity', qty);
-  } else {
-    // If qty is 0 or less and item not in cart, do nothing or send a specific response
-    console.log('Attempted to add/update item with qty <= 0 when not in cart or itemIndex invalid.');
-    return res.status(400).json({ message: 'Invalid quantity or product not in cart to remove' });
-  }
 
-  await user.save();
-  // Populate cart products before sending back
-  await user.populate('cart.product');
-  console.log('Cart updated and saved successfully for user:', user.email);
-  res.json(user.cart);
+    const user = await User.findById(req.user._id);
+
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    const product = await Product.findById(productId);
+
+    if (!product) {
+      return res.status(404).json({ message: 'Product not found' });
+    }
+
+    // Find item index considering both productId and selectedVariantIndex
+    const itemIndex = user.cart.findIndex(
+      (item: any) => {
+        const itemProductId = item.product._id ? item.product._id.toString() : item.product.toString();
+        const itemVariantIndex = item.selectedVariantIndex !== undefined ? item.selectedVariantIndex : 0;
+        return itemProductId === productId && itemVariantIndex === selectedVariantIndex;
+      }
+    );
+
+    if (itemIndex > -1) {
+      // Update quantity or remove item
+      if (qty > 0) {
+        user.cart[itemIndex].qty = qty;
+        user.cart[itemIndex].selectedVariantIndex = selectedVariantIndex;
+      } else {
+        user.cart.splice(itemIndex, 1);
+      }
+    } else if (qty > 0) {
+      // Add new item with variant index
+      user.cart.push({ 
+        product: productId as any, 
+        qty, 
+        selectedVariantIndex 
+      });
+    } else {
+      // If trying to remove item that doesn't exist, just return current cart
+      await user.populate('cart.product');
+      return res.json(user.cart);
+    }
+
+    await user.save();
+    await user.populate('cart.product');
+    
+    res.json(user.cart);
+  } catch (error: any) {
+    console.error('Error in updateCart:', error);
+    res.status(500).json({ 
+      message: 'Error updating cart', 
+      error: error.message 
+    });
+  }
 };
 
 // @desc    Get user wishlist
@@ -125,39 +133,90 @@ export const toggleWishlist = async (req: AuthenticatedRequest, res: Response) =
 // @route   POST /api/user/checkout
 // @access  Private
 export const createOrder = async (req: AuthenticatedRequest, res: Response) => {
-  const { orderItems, shippingAddress, paymentMethod, taxPrice, shippingPrice, totalPrice } = req.body;
+  try {
+    const {
+      orderItems,
+      shippingAddress,
+      paymentMethod,
+      taxPrice,
+      shippingPrice,
+      totalPrice,
+      distance
+    } = req.body;
 
-  if (orderItems && orderItems.length === 0) {
-    res.status(400).json({ message: 'No order items' });
-    return;
+    console.log('Create order request:', {
+      userId: req.user._id,
+      orderItemsCount: orderItems?.length,
+      shippingAddress,
+      paymentMethod,
+      totalPrice,
+      distance
+    });
+
+    if (!orderItems || orderItems.length === 0) {
+      return res.status(400).json({ message: 'No order items' });
+    }
+
+    // Validate required fields
+    if (!shippingAddress || !paymentMethod) {
+      return res.status(400).json({ message: 'Missing required fields' });
+    }
+
+    // Validate shipping address required fields
+    if (!shippingAddress.address || !shippingAddress.city || !shippingAddress.postalCode) {
+      return res.status(400).json({ message: 'Incomplete shipping address' });
+    }
+
+    console.log('Creating order with data:', {
+      user: req.user._id,
+      orderItems: orderItems.length,
+      shippingAddress,
+      paymentMethod,
+      totalPrice
+    });
+
+    const order = new Order({
+      user: req.user._id,
+      orderItems,
+      shippingAddress,
+      paymentMethod,
+      taxPrice: taxPrice || 0,
+      shippingPrice: shippingPrice || 0,
+      totalPrice,
+      distance: distance || 0,
+      status: 'placed',
+    });
+
+    console.log('Order object created, saving...');
+    const createdOrder = await order.save();
+    console.log('Order saved successfully:', createdOrder._id);
+
+    // Clear the user's cart after successful checkout
+    const user = await User.findById(req.user._id);
+    if (user) {
+      user.cart.splice(0, user.cart.length);
+      await user.save();
+      console.log('User cart cleared');
+    }
+
+    res.status(201).json(createdOrder);
+  } catch (error: any) {
+    console.error('Error creating order:', error);
+    res.status(500).json({
+      message: 'Error creating order',
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
   }
-
-  const order = new Order({
-    user: req.user._id,
-    orderItems,
-    shippingAddress,
-    paymentMethod,
-    taxPrice,
-    shippingPrice,
-    totalPrice,
-  });
-
-  const createdOrder = await order.save();
-  // Clear the user's cart after successful checkout
-  const user = await User.findById(req.user._id);
-  if (user) {
-    user.cart.splice(0, user.cart.length); // Fix: Use splice to clear the DocumentArray
-    await user.save();
-  }
-
-  res.status(201).json(createdOrder);
 };
 
 // @desc    Get logged in user orders
 // @route   GET /api/user/orders
 // @access  Private
 export const getUserOrders = async (req: AuthenticatedRequest, res: Response) => {
-  const orders = await Order.find({ user: req.user._id }).populate('user', 'username email');
+  const orders = await Order.find({ user: req.user._id })
+    .populate('user', 'username email')
+    .sort({ createdAt: -1 });
   res.json(orders);
 };
 
@@ -165,11 +224,93 @@ export const getUserOrders = async (req: AuthenticatedRequest, res: Response) =>
 // @route   GET /api/user/orders/:id
 // @access  Private
 export const getOrderById = async (req: AuthenticatedRequest, res: Response) => {
-  const order = await Order.findById(req.params.id).populate('user', 'username email');
+  const order = await Order.findById(req.params.id).populate('user', 'name email');
 
-  if (order && order.user._id.toString() === req.user._id.toString()) {
+  // Check if order belongs to the authenticated user
+  const orderUserId = (order.user as any).id ? (order.user as any).id.toString() : (order.user as any).toString();
+  if (order && orderUserId === req.user._id.toString()) {
     res.json(order);
   } else {
     res.status(404).json({ message: 'Order not found' });
+  }
+};
+
+// @desc    Cancel order
+// @route   PUT /api/user/orders/:id/cancel
+// @access  Private
+export const cancelOrder = async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { reason } = req.body;
+
+    if (!reason || !reason.trim()) {
+      return res.status(400).json({ message: 'Cancellation reason is required' });
+    }
+
+    const order = await Order.findById(req.params.id);
+
+    if (!order) {
+      return res.status(404).json({ message: 'Order not found' });
+    }
+
+    // Check if order belongs to the user
+    if (order.user.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ message: 'Not authorized to cancel this order' });
+    }
+
+    // Check if order can be cancelled
+    if (order.isDelivered) {
+      return res.status(400).json({ message: 'Cannot cancel delivered order' });
+    }
+
+    if (order.status === 'cancelled') {
+      return res.status(400).json({ message: 'Order is already cancelled' });
+    }
+
+    if (order.status === 'out_for_delivery') {
+      return res.status(400).json({ message: 'Cannot cancel order that is out for delivery' });
+    }
+
+    order.status = 'cancelled';
+    order.cancelReason = reason;
+    order.cancelledAt = new Date();
+
+    await order.save();
+
+    res.json({ 
+      message: 'Order cancelled successfully', 
+      order 
+    });
+  } catch (error: any) {
+    console.error('Error cancelling order:', error);
+    res.status(500).json({ message: 'Failed to cancel order' });
+  }
+};
+
+
+
+
+
+// GET DELIVERY SETTINGS (ALL DATA)
+export const getDeliverySettings = async (req: Request, res: Response) => {
+  try {
+    const settings = await DeliverySettings.findOne();
+
+    if (!settings) {
+      return res.status(404).json({
+        message: 'Delivery settings not found'
+      });
+    }
+
+    res.json({
+      pricePerKm: settings.pricePerKm,
+      baseCharge: settings.baseCharge,
+      freeDeliveryThreshold: settings.freeDeliveryThreshold,
+      storeLocations: settings.storeLocations
+    });
+
+  } catch (error) {
+    res.status(500).json({
+      message: 'Server error'
+    });
   }
 };

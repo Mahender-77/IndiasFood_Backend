@@ -1,5 +1,12 @@
 import mongoose, { Document, Model, PopulatedDoc, PopulateOptions } from 'mongoose';
-import { IProduct } from './Product'; // Import IProduct
+import { IProduct } from './Product';
+
+// Cart Item Interface for User
+export interface ICartItem {
+  product: PopulatedDoc<IProduct & Document>;
+  qty: number;
+  selectedVariantIndex?: number; // Made optional with default 0
+}
 
 export interface IUser {
   username: string;
@@ -11,12 +18,9 @@ export interface IUser {
     postalCode: string;
     country: string;
   }>;
-  cart: Array<{
-    product: PopulatedDoc<IProduct & Document>;
-    qty: number;
-  }>;
-  wishlist: Array<PopulatedDoc<IProduct & Document>>; // Use IProduct for wishlist
-  deliveryProfile?: { // Optional as not all users are delivery partners
+  cart: ICartItem[]; // Use the dedicated interface
+  wishlist: Array<PopulatedDoc<IProduct & Document>>;
+  deliveryProfile?: {
     vehicleType?: string;
     licenseNumber?: string;
     areas?: string[];
@@ -26,7 +30,7 @@ export interface IUser {
     status?: 'pending' | 'approved' | 'rejected';
   };
   isAdmin: boolean;
-  role: 'user' | 'admin' | 'delivery';
+  role: 'user' | 'admin' | 'delivery' | 'delivery-pending';
 }
 
 export interface UserDocument extends IUser, Document {}
@@ -47,9 +51,23 @@ const UserSchema = new mongoose.Schema<UserDocument, UserModel>({
   }],
   cart: [
     {
-      product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true },
-      qty: { type: Number, required: true, default: 1 },
-    },
+      product: { 
+        type: mongoose.Schema.Types.ObjectId, 
+        ref: 'Product', 
+        required: true 
+      },
+      qty: { 
+        type: Number, 
+        required: true, 
+        min: 1, 
+        default: 1 
+      },
+      selectedVariantIndex: { 
+        type: Number, 
+        default: 0, 
+        min: 0 
+      }
+    }
   ],
   wishlist: [
     { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
@@ -64,7 +82,7 @@ const UserSchema = new mongoose.Schema<UserDocument, UserModel>({
     status: { type: String, enum: ['pending', 'approved'], default: 'pending' },
   },
   isAdmin: { type: Boolean, default: false },
-  role: { type: String, enum: ['user', 'admin', 'delivery'], default: 'user' },
+  role: { type: String, enum: ['user', 'admin', 'delivery', 'delivery-pending'], default: 'user' },
 }, { timestamps: true });
 
 const User = mongoose.model<UserDocument, UserModel>('User', UserSchema);

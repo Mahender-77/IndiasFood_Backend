@@ -1,4 +1,4 @@
-import express from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import dotenv from 'dotenv';
 import cors from 'cors';
 import connectDB from './utils/db';
@@ -13,7 +13,11 @@ app.use(express.json());
 const allowedOrigins =
   process.env.NODE_ENV === 'production'
     ? ['https://indias-food-front-end.vercel.app']
-    : ['http://localhost:8080'];
+    : [
+        'http://localhost:8080',  // Your Vite dev server
+        'http://localhost:5173',  // Backup Vite default port
+        'http://localhost:3000',  // If you ever use Create React App
+      ];
 
 app.use(cors({
   origin: allowedOrigins,
@@ -23,8 +27,9 @@ app.use(cors({
 
 app.use('/api', allRoutes);
 
+
 // error handler
-app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+app.use((err: any, req: Request, res: Response, next: NextFunction) => {
   console.error(err.stack);
   res.status(500).send('Something broke!');
 });

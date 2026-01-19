@@ -1,0 +1,29 @@
+BACKEND ENVIRONMENT VARIABLES SETUP
+=====================================
+
+Create a file named '.env' in this backend directory with the following content:
+
+# Database
+MONGODB_URI=mongodb://localhost:27017/indias-food
+
+# JWT
+JWT_SECRET=your_jwt_secret_here_replace_with_random_string
+
+# Cloudinary Configuration - GET THESE FROM https://cloudinary.com/
+CLOUDINARY_CLOUD_NAME=your_cloudinary_cloud_name
+CLOUDINARY_API_KEY=your_cloudinary_api_key
+CLOUDINARY_API_SECRET=your_cloudinary_api_secret
+
+# Frontend URL
+CLIENT_URL=http://localhost:8080
+
+# Port
+PORT=5000
+
+INSTRUCTIONS:
+1. Go to https://cloudinary.com/ and sign up for a free account
+2. Go to your Dashboard and copy the Cloud Name
+3. Go to Account Settings > API Keys and copy the API Key and API Secret
+4. Replace the placeholder values above with your actual credentials
+5. Save this file as '.env' in the backend directory
+6. Restart your backend server: cd backend && npm run dev

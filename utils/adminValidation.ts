@@ -2,27 +2,58 @@ import Joi from 'joi';
 
 export const createProductSchema = Joi.object({
   name: Joi.string().required(),
-  description: Joi.string().required(),
-  price: Joi.number().min(0).required(),
-  weight: Joi.string().optional(),
+  description: Joi.string().optional(),
+  originalPrice: Joi.number().min(0).required(),
+  offerPrice: Joi.number().min(0).optional(),
+  variants: Joi.array().items(Joi.object({
+    type: Joi.string().valid('weight', 'pieces', 'box').required(),
+    value: Joi.string().required(),
+    originalPrice: Joi.number().min(0).required(),
+    offerPrice: Joi.number().min(0).optional(),
+  })).optional(),
   shelfLife: Joi.string().optional(),
-  category: Joi.string().pattern(/^[0-9a-fA-F]{24}$/).required(), // Validate as ObjectId
-  countInStock: Joi.number().min(0).required(),
-  videoUrl: Joi.string().uri().allow('').optional(), // Optional video URL, allow empty string
+  category: Joi.string().pattern(/^[0-9a-fA-F]{24}$/).required(),
+  inventory: Joi.array().items(Joi.object({
+    location: Joi.string().valid('hyderabad', 'vizag', 'vijayawada', 'bangalore').required(),
+    stock: Joi.array().items(Joi.object({
+      variantIndex: Joi.number().min(0).required(),
+      quantity: Joi.number().min(0).required(),
+      lowStockThreshold: Joi.number().min(0).optional(),
+    })).required(),
+  })).optional(),
+  videoUrl: Joi.string().uri().allow('').optional(),
+  images: Joi.array().items(Joi.string().uri()).optional(),
   isActive: Joi.boolean().optional(),
+  isGITagged: Joi.boolean().optional(),
+  isNewArrival: Joi.boolean().optional(),
 });
 
 export const updateProductSchema = Joi.object({
   name: Joi.string().optional(),
   description: Joi.string().optional(),
-  price: Joi.number().min(0).optional(),
-  weight: Joi.string().optional(),
+  originalPrice: Joi.number().min(0).optional(),
+  offerPrice: Joi.number().min(0).optional(),
+  variants: Joi.array().items(Joi.object({
+    type: Joi.string().valid('weight', 'pieces', 'box').required(),
+    value: Joi.string().required(),
+    originalPrice: Joi.number().min(0).required(),
+    offerPrice: Joi.number().min(0).optional(),
+  })).optional(),
   shelfLife: Joi.string().optional(),
   category: Joi.string().pattern(/^[0-9a-fA-F]{24}$/).optional(),
-  countInStock: Joi.number().min(0).optional(),
+  inventory: Joi.array().items(Joi.object({
+    location: Joi.string().valid('hyderabad', 'vizag', 'vijayawada', 'bangalore').required(),
+    stock: Joi.array().items(Joi.object({
+      variantIndex: Joi.number().min(0).required(),
+      quantity: Joi.number().min(0).required(),
+      lowStockThreshold: Joi.number().min(0).optional(),
+    })).required(),
+  })).optional(),
   videoUrl: Joi.string().uri().optional(),
-  images: Joi.array().items(Joi.string().uri()).optional(), // For updating images (e.g., removing old ones)
+  images: Joi.array().items(Joi.string().uri()).optional(),
   isActive: Joi.boolean().optional(),
+  isGITagged: Joi.boolean().optional(),
+  isNewArrival: Joi.boolean().optional(),
 });
 
 export const updateOrderStatusSchema = Joi.object({

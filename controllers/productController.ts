@@ -8,18 +8,37 @@ import Category from '../models/Category'; // Import Category model
 export const getProducts = async (req: Request, res: Response) => {
   const pageSize = 10;
   const page = Number(req.query.pageNumber) || 1;
-  const keyword = req.query.keyword
-    ? { name: { $regex: req.query.keyword as string, $options: 'i' } }
+  
+  // Handle both 'search' and 'keyword' query params for compatibility
+  const searchTerm = (req.query.search || req.query.keyword) as string;
+  const searchFilter = searchTerm
+    ? { 
+        $or: [
+          { name: { $regex: searchTerm, $options: 'i' } },
+          { description: { $regex: searchTerm, $options: 'i' } }
+        ]
+      }
     : {};
 
   let categoryFilter = {};
-  if (req.query.category && req.query.category !== 'all') {
-    const category = await Category.findOne({ name: req.query.category as string });
+  if (req.query.category && req.query.category !== 'all' && req.query.category !== '') {
+    // Case-insensitive category search
+    const category = await Category.findOne({ 
+      name: { $regex: new RegExp(`^${req.query.category}$`, 'i') } 
+    });
     if (category) {
       categoryFilter = { category: category._id };
     } else {
-      // If category not found, return empty products array
-      return res.json({ products: [], page, pages: 0 });
+      // If category not found by exact match, try partial match
+      const partialCategory = await Category.findOne({ 
+        name: { $regex: req.query.category as string, $options: 'i' } 
+      });
+      if (partialCategory) {
+        categoryFilter = { category: partialCategory._id };
+      } else {
+        // If still not found, return empty products array
+        return res.json({ products: [], page, pages: 0 });
+      }
     }
   }
 
@@ -41,8 +60,15 @@ export const getProducts = async (req: Request, res: Response) => {
       break;
   }
 
-  const count = await Product.countDocuments({ ...keyword, ...categoryFilter });
-  const products = await Product.find({ ...keyword, ...categoryFilter })
+  // Build final query - only include active products
+  const query = { 
+    ...searchFilter, 
+    ...categoryFilter,
+    isActive: true 
+  };
+
+  const count = await Product.countDocuments(query);
+  const products = await Product.find(query)
     .populate('category', 'name') // Populate category name for frontend display
     .sort(sort)
     .limit(pageSize)
@@ -94,6 +120,110 @@ export const getPublicCategories = async (req: Request, res: Response) => {
     }));
     res.json(categoriesWithImages);
     
+  } catch (error: any) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// @desc    Fetch GI Tagged products
+// @route   GET /api/products/gi-tagged
+// @access  Public
+export const getGITaggedProducts = async (req: Request, res: Response) => {
+  try {
+    const pageSize = 12;
+    const page = Number(req.query.pageNumber) || 1;
+    
+    const searchTerm = (req.query.search || req.query.keyword) as string;
+    const searchFilter = searchTerm
+      ? { 
+          $or: [
+            { name: { $regex: searchTerm, $options: 'i' } },
+            { description: { $regex: searchTerm, $options: 'i' } }
+          ]
+        }
+      : {};
+
+    let sort: { [key: string]: 1 | -1 } = { createdAt: -1 };
+    switch (req.query.sortBy) {
+      case 'price-low':
+        sort = { originalPrice: 1 };
+        break;
+      case 'price-high':
+        sort = { originalPrice: -1 };
+        break;
+      case 'name':
+        sort = { name: 1 };
+        break;
+      default:
+        sort = { createdAt: -1 };
+    }
+
+    const query = { 
+      ...searchFilter, 
+      isGITagged: true,
+      isActive: true 
+    };
+
+    const count = await Product.countDocuments(query);
+    const products = await Product.find(query)
+      .populate('category', 'name')
+      .sort(sort)
+      .limit(pageSize)
+      .skip(pageSize * (page - 1));
+
+    res.json({ products, page, pages: Math.ceil(count / pageSize) });
+  } catch (error: any) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// @desc    Fetch New Arrival products
+// @route   GET /api/products/new-arrivals
+// @access  Public
+export const getNewArrivalProducts = async (req: Request, res: Response) => {
+  try {
+    const pageSize = 12;
+    const page = Number(req.query.pageNumber) || 1;
+    
+    const searchTerm = (req.query.search || req.query.keyword) as string;
+    const searchFilter = searchTerm
+      ? { 
+          $or: [
+            { name: { $regex: searchTerm, $options: 'i' } },
+            { description: { $regex: searchTerm, $options: 'i' } }
+          ]
+        }
+      : {};
+
+    let sort: { [key: string]: 1 | -1 } = { createdAt: -1 };
+    switch (req.query.sortBy) {
+      case 'price-low':
+        sort = { originalPrice: 1 };
+        break;
+      case 'price-high':
+        sort = { originalPrice: -1 };
+        break;
+      case 'name':
+        sort = { name: 1 };
+        break;
+      default:
+        sort = { createdAt: -1 };
+    }
+
+    const query = { 
+      ...searchFilter, 
+      isNewArrival: true,
+      isActive: true 
+    };
+
+    const count = await Product.countDocuments(query);
+    const products = await Product.find(query)
+      .populate('category', 'name')
+      .sort(sort)
+      .limit(pageSize)
+      .skip(pageSize * (page - 1));
+
+    res.json({ products, page, pages: Math.ceil(count / pageSize) });
   } catch (error: any) {
     res.status(500).json({ message: error.message });
   }

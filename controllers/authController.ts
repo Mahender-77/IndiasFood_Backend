@@ -74,11 +74,14 @@ export const getUserProfile = async (req: Request, res: Response) => {
   const user = await User.findById(userId).select('-password');
 
   if (user) {
+    // Ensure isAdmin is consistent with role
+    const isAdmin = user.role === 'admin' || user.isAdmin;
+
     res.json({
       _id: user._id,
       username: user.username,
       email: user.email,
-      isAdmin: user.isAdmin,
+      isAdmin,
       addresses: user.addresses,
       role: user.role,
       deliveryProfile: user.deliveryProfile, // Include delivery profile if it exists

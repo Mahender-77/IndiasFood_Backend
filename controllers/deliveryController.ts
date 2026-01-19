@@ -32,11 +32,13 @@ export const applyForDelivery = async (req: Request, res: Response) => {
       drivingLicenseImageUrl,
       status: 'pending', // Automatically set to pending
     };
+    user.role = 'delivery-pending'; // Set role to delivery-pending
     await user.save();
 
     res.status(200).json({ message: 'Delivery application submitted successfully.' });
   } catch (error: any) {
     res.status(500).json({ message: error.message });
+    console.log(error);
   }
 };
 
@@ -45,7 +47,11 @@ export const applyForDelivery = async (req: Request, res: Response) => {
 // @access  Private/Admin
 export const getPendingApplications = async (req: Request, res: Response) => {
   try {
-    const applications = await (User as any).find({ 'deliveryProfile.status': 'pending' })
+    // Only show users with role 'delivery-pending' who have delivery profiles
+    const applications = await (User as any).find({
+      role: 'delivery-pending',
+      deliveryProfile: { $exists: true }
+    })
       .select('-password')
       .populate('addresses') // Populate addresses for full user details
       .populate('cart.product') // Populate product details in cart
@@ -67,12 +73,12 @@ export const approveDeliveryApplication = async (req: Request, res: Response) =>
       return res.status(404).json({ message: 'User not found' });
     }
 
-    if (!user.deliveryProfile || user.deliveryProfile.status !== 'pending') {
+    if (!user.deliveryProfile || user.deliveryProfile.status !== 'pending' || user.role !== 'delivery-pending') {
       return res.status(400).json({ message: 'No pending delivery application for this user' });
     }
 
     user.deliveryProfile.status = 'approved';
-    user.role = 'delivery'; // Change user role to delivery
+    user.role = 'delivery'; // Change user role from delivery-pending to delivery
     await user.save();
 
     res.status(200).json({ message: 'Delivery application approved and user role updated.' });

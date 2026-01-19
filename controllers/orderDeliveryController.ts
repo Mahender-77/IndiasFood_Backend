@@ -28,7 +28,7 @@ export const assignOrderToDeliveryPerson = async (req: Request, res: Response) =
 
     order.deliveryPerson = deliveryPersonId;
     order.eta = eta;
-    order.status = 'Assigned';
+    order.status = 'confirmed';
 
     const updatedOrder = await order.save();
     res.json(updatedOrder);
@@ -68,7 +68,7 @@ export const markOrderAsDelivered = async (req: AuthenticatedRequest, res: Respo
 
     order.isDelivered = true;
     order.deliveredAt = new Date();
-    order.status = 'Delivered';
+    order.status = 'delivered';
 
     const updatedOrder = await order.save();
     res.json(updatedOrder);

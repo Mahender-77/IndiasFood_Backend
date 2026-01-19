@@ -1,9 +1,11 @@
-import { Request, Response } from 'express';
+import { Request, Response, NextFunction } from 'express';
 import mongoose from 'mongoose';
 import Order from '../models/Order';
 import Product from '../models/Product';
 import User from '../models/User'; // Import User model
+import DeliverySettings from '../models/DeliverySettings';
 import Category from '../models/Category'; // Import Category model
+import Location from '../models/Location'; // Import Location model
 import cloudinary from '../config/cloudinary'; // Import Cloudinary config
 import upload from '../middleware/multer'; // Import Multer middleware
 import { createProductSchema, updateProductSchema, updateOrderStatusSchema, updateOrderDeliverySchema, createCategorySchema, updateCategorySchema } from '../utils/adminValidation';
@@ -43,6 +45,83 @@ export const getAllOrders = async (req: AuthenticatedRequest, res: Response) => 
   const orders = await Order.find({ ...keyword }).populate('user', 'id username email').populate('deliveryPerson', 'id username email');
   res.json(orders);
 };
+
+
+
+
+// @desc    Create a new product
+// @route   POST /api/admin/products
+// @access  Private/Admin
+export const createProduct = async (req: AuthenticatedRequest, res: Response) => {
+  // Validate input data
+  const { error } = createProductSchema.validate(req.body);
+  if (error) {
+    return res.status(400).json({ message: error.details[0].message });
+  }
+
+  const { name, description, originalPrice, offerPrice, variants, shelfLife, category, inventory, videoUrl, images, isActive, isGITagged, isNewArrival } = req.body;
+
+  try {
+    // Check if category exists
+    const categoryExists = await Category.findById(category);
+    if (!categoryExists) {
+      return res.status(400).json({ message: 'Invalid category ID' });
+    }
+
+    // Validate variants if provided
+    if (variants && variants.length > 0) {
+      for (let i = 0; i < variants.length; i++) {
+        const variant = variants[i];
+        if (!variant.type || !variant.value || variant.originalPrice < 0) {
+          return res.status(400).json({ message: `Variant ${i + 1} is missing required fields or has invalid pricing` });
+        }
+      }
+    }
+
+    // Create the product
+    const product = new Product({
+      name,
+      description,
+      originalPrice,
+      offerPrice,
+      variants,
+      shelfLife,
+      category,
+      inventory,
+      videoUrl,
+      images,
+      isActive: isActive !== undefined ? isActive : true,
+      isGITagged: isGITagged || false,
+      isNewArrival: isNewArrival || false
+    });
+
+    const createdProduct = await product.save();
+
+    console.log('Product created successfully:', createdProduct._id);
+
+    res.status(201).json({
+      message: 'Product created successfully',
+      product: createdProduct
+    });
+
+  } catch (error: any) {
+    console.error('Error creating product:', error);
+
+    // Handle mongoose validation errors
+    if (error.name === 'ValidationError') {
+      const messages = Object.values(error.errors).map((err: any) => err.message);
+      return res.status(400).json({ message: 'Validation Error', details: messages });
+    }
+
+    // Handle duplicate key errors
+    if (error.code === 11000) {
+      return res.status(400).json({ message: 'Product with this name already exists' });
+    }
+
+    res.status(500).json({ message: 'Server error while creating product' });
+  }
+};
+
 
 // @desc    Update order status
 // @route   PUT /api/admin/orders/:id/status
@@ -96,51 +175,6 @@ export const updateOrderToDelivered = async (req: AuthenticatedRequest, res: Res
   }
 };
 
-// @desc    Create a new product
-// @route   POST /api/admin/products
-// @access  Private/Admin
-export const createProduct = async (req: AuthenticatedRequest, res: Response) => {
-  console.log('Attempting to create product. Request Body:', req.body);
-  console.log('Authenticated User:', req.user);
-
-  const { error } = createProductSchema.validate(req.body);
-  if (error) {
-    console.error('Product validation error:', error.details[0].message);
-    return res.status(400).json({ message: error.details[0].message });
-  }
-
-  const { name, description, price, weight, shelfLife, category, countInStock, videoUrl, isActive } = req.body;
-
-  try {
-    // Check if category exists
-    const existingCategory = await Category.findById(category);
-    if (!existingCategory) {
-      console.error('Category not found for ID:', category);
-      return res.status(404).json({ message: 'Category not found' });
-    }
-
-    const product = new Product({
-      name,
-      description,
-      price,
-      weight,
-      shelfLife,
-      images: [], // Initialize as an empty array
-      category,
-      countInStock,
-      videoUrl, // Include videoUrl
-      isActive,
-      user: req.user._id, // Assuming the admin creating the product is the user
-    });
-
-    const createdProduct = await product.save();
-    console.log('Product created successfully:', createdProduct);
-    res.status(201).json(createdProduct);
-  } catch (error: any) {
-    console.error('Error creating product:', error);
-    res.status(500).json({ message: error.message || 'Product creation failed' });
-  }
-};
 
 // @desc    Upload product images
 // @route   POST /api/admin/products/:id/images
@@ -152,7 +186,7 @@ export const updateProduct = async (req: AuthenticatedRequest, res: Response) =>
   const { error } = updateProductSchema.validate(req.body);
   if (error) return res.status(400).json({ message: error.details[0].message });
 
-  const { name, description, price, weight, shelfLife, category, countInStock, videoUrl, images, isActive } = req.body;
+  const { name, description, originalPrice, offerPrice, variants, shelfLife, category, inventory, videoUrl, images, isActive, isGITagged, isNewArrival } = req.body;
 
   try {
     const product = await Product.findById(req.params.id);
@@ -169,16 +203,30 @@ export const updateProduct = async (req: AuthenticatedRequest, res: Response) =>
       }
     }
 
+    // Update basic fields
     product.name = name || product.name;
-    product.description = description || product.description;
-    product.price = price || product.price;
-    product.weight = weight || product.weight;
-    product.shelfLife = shelfLife || product.shelfLife;
+    product.description = description !== undefined ? description : product.description;
+    product.originalPrice = originalPrice !== undefined ? originalPrice : product.originalPrice;
+    product.offerPrice = offerPrice !== undefined ? offerPrice : product.offerPrice;
+    product.shelfLife = shelfLife !== undefined ? shelfLife : product.shelfLife;
     product.category = category || product.category;
-    product.countInStock = countInStock !== undefined ? countInStock : product.countInStock;
     product.videoUrl = videoUrl !== undefined ? videoUrl : product.videoUrl;
-    product.images = images !== undefined ? images : product.images; // Allow updating images array
-    product.isActive = isActive !== undefined ? isActive : product.isActive; // Allow updating isActive
+    product.images = images !== undefined ? images : product.images;
+    product.isActive = isActive !== undefined ? isActive : product.isActive;
+
+    // Update flags
+    product.isGITagged = isGITagged !== undefined ? isGITagged : product.isGITagged;
+    product.isNewArrival = isNewArrival !== undefined ? isNewArrival : product.isNewArrival;
+
+    // Update variants if provided
+    if (variants !== undefined) {
+      product.variants = variants;
+    }
+
+    // Update inventory if provided
+    if (inventory !== undefined) {
+      product.inventory = inventory;
+    }
 
     const updatedProduct = await product.save();
     res.json(updatedProduct);
@@ -277,7 +325,9 @@ export const getCustomerById = async (req: AuthenticatedRequest, res: Response) 
       .lean(); // Return plain JavaScript objects
 
     if (customer) {
-      const customerOrders = await Order.find({ user: customer._id }).populate('orderItems.product', 'name price');
+      // Convert string _id back to ObjectId for querying
+      const mongoose = require('mongoose');
+      const customerOrders = await Order.find({ user: new mongoose.Types.ObjectId(customer._id) }).populate('orderItems.product', 'name price');
       res.json({ ...customer, orderHistory: customerOrders });
     } else {
       res.status(404).json({ message: 'Customer not found' });
@@ -545,5 +595,495 @@ export const getRevenueToday = async (req: AuthenticatedRequest, res: Response) 
     res.json({ totalRevenue });
   } catch (error: any) {
     res.status(500).json({ message: error.message });
+  }
+};
+
+// @desc    Get all locations
+// @route   GET /api/admin/locations
+// @access  Private/Admin
+export const getLocations = async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const locations = await Location.find({ isActive: true }).sort({ createdAt: -1 });
+    res.json(locations);
+  } catch (error: any) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// @desc    Create a new location
+// @route   POST /api/admin/locations
+// @access  Private/Admin
+export const createLocation = async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { name } = req.body;
+
+    // Convert to lowercase and trim
+    const locationName = name.toLowerCase().trim();
+    const displayName = name.trim();
+
+    // Check if location already exists
+    const existingLocation = await Location.findOne({ name: locationName });
+    if (existingLocation) {
+      return res.status(400).json({ message: 'Location already exists' });
+    }
+
+    const location = new Location({
+      name: locationName,
+      displayName: displayName,
+      isActive: true
+    });
+
+    const createdLocation = await location.save();
+    res.status(201).json(createdLocation);
+  } catch (error: any) {
+    if (error.code === 11000) {
+      res.status(400).json({ message: 'Location already exists' });
+    } else {
+      res.status(500).json({ message: error.message });
+    }
+  }
+};
+
+// @desc    Update a location
+// @route   PUT /api/admin/locations/:id
+// @access  Private/Admin
+export const updateLocation = async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { name, isActive } = req.body;
+
+    const location = await Location.findById(req.params.id);
+
+    if (!location) {
+      return res.status(404).json({ message: 'Location not found' });
+    }
+
+    if (name) {
+      const locationName = name.toLowerCase().trim();
+      const displayName = name.trim();
+
+      // Check if another location with this name exists
+      const existingLocation = await Location.findOne({
+        name: locationName,
+        _id: { $ne: req.params.id }
+      });
+
+      if (existingLocation) {
+        return res.status(400).json({ message: 'Location name already exists' });
+      }
+
+      location.name = locationName;
+      location.displayName = displayName;
+    }
+
+    if (isActive !== undefined) {
+      location.isActive = isActive;
+    }
+
+    const updatedLocation = await location.save();
+    res.json(updatedLocation);
+  } catch (error: any) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// @desc    Delete a location
+// @route   DELETE /api/admin/locations/:id
+// @access  Private/Admin
+export const deleteLocation = async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const location = await Location.findById(req.params.id);
+
+    if (!location) {
+      return res.status(404).json({ message: 'Location not found' });
+    }
+
+    // Check if any products have inventory in this location
+    const productsWithLocation = await Product.find({
+      'inventory.location': location.name
+    });
+
+    if (productsWithLocation.length > 0) {
+      return res.status(400).json({
+        message: `Cannot delete location as it has ${productsWithLocation.length} product(s) with inventory`
+      });
+    }
+
+    await Location.findByIdAndDelete(req.params.id);
+    res.json({ message: 'Location deleted successfully' });
+  } catch (error: any) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// ==================== INVENTORY MANAGEMENT ====================
+
+export const getAllProducts = async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const products = await Product.find({}).populate('category', 'name _id');
+    res.json(products);
+  } catch (error: any) {
+    res.status(500).json({ message: error.message });
+  }
+}
+
+
+// GET /api/admin/inventory/:location - Get inventory for specific location
+export const getInventory = async (req: Request, res: Response) => {
+  try {
+    const { location } = req.params;
+    const products = await Product.find({
+      'inventory.location': location,
+      isActive: true
+    }).populate('category');
+
+    res.json(products);
+  } catch (error: any) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// Validation middleware
+const validateCreateProduct = (req: Request, res: Response, next: NextFunction) => {
+  const { error } = createProductSchema.validate(req.body);
+  if (error) {
+    return res.status(400).json({ message: error.details[0].message });
+  }
+  next();
+};
+
+const validateUpdateProduct = (req: Request, res: Response, next: NextFunction) => {
+  const { error } = updateProductSchema.validate(req.body);
+  if (error) {
+    return res.status(400).json({ message: error.details[0].message });
+  }
+  next();
+};
+
+// POST /api/admin/inventory/products - Create new product
+export const createInventoryProduct = async (req: Request, res: Response) => {
+  try {
+   
+    
+    const productData = req.body;
+    
+    // Validate required fields
+    if (!productData.name || !productData.name.trim()) {
+      return res.status(400).json({ message: 'Product name is required' });
+    }
+    
+    if (!productData.category) {
+      return res.status(400).json({ message: 'Category is required' });
+    }
+    
+    // For variant products, originalPrice is not required
+    // For non-variant products, originalPrice IS required
+    if ((!productData.variants || productData.variants.length === 0) && 
+        (productData.originalPrice === undefined || productData.originalPrice === null)) {
+      return res.status(400).json({ message: 'Original price is required for non-variant products' });
+    }
+    
+    const product = new Product(productData);
+    await product.save();
+    
+    // Populate category before sending response
+    await product.populate('category');
+    
+    console.log('Product created successfully:', product._id);
+    res.status(201).json(product);
+  } catch (error: any) {
+    console.error('Error creating product:', error);
+    console.error('Error name:', error.name);
+    console.error('Error message:', error.message);
+    
+    if (error.name === 'ValidationError') {
+      const validationErrors = Object.values(error.errors).map((err: any) => err.message);
+      return res.status(400).json({ 
+        message: 'Validation failed', 
+        errors: validationErrors,
+        details: error.errors 
+      });
+    }
+    
+    res.status(400).json({ message: error.message, details: error.errors });
+  }
+};
+
+// PUT /api/admin/inventory/:id - Update product + flags
+export const updateInventoryProduct = async (req: Request, res: Response) => {
+  try {
+    const product = await Product.findByIdAndUpdate(
+      req.params.id,
+      req.body,
+      { new: true }
+    ).populate('category');
+
+    if (!product) {
+      return res.status(404).json({ message: 'Product not found' });
+    }
+
+    res.json(product);
+  } catch (error: any) {
+    res.status(400).json({ message: error.message });
+  }
+};
+
+// PUT /api/admin/inventory/:id/stock - Update specific location stock
+export const updateStock = async (req: Request, res: Response) => {
+  try {
+    // Validate input parameters
+    const { id } = req.params;
+    const { location, variantIndex, quantity } = req.body;
+
+    if (!id || !location || typeof variantIndex !== 'number' || typeof quantity !== 'number') {
+      return res.status(400).json({
+        message: 'Invalid input parameters',
+        required: 'productId, location, variantIndex (number), quantity (number)'
+      });
+    }
+
+    if (quantity < 0) {
+      return res.status(400).json({ message: 'Quantity cannot be negative' });
+    }
+
+    // Check if product exists
+    const product = await Product.findById(id);
+    if (!product) {
+      return res.status(404).json({ message: 'Product not found' });
+    }
+
+    // Find if location already exists in inventory
+    const locationIndex = product.inventory?.findIndex(inv => inv.location === location) ?? -1;
+
+    if (locationIndex >= 0) {
+      // Location exists - update or add variant stock
+      const existingLocation = product.inventory![locationIndex];
+      const stockIndex = existingLocation.stock?.findIndex(stock => stock.variantIndex === variantIndex) ?? -1;
+
+      if (stockIndex >= 0) {
+        // Variant stock exists - update quantity
+        existingLocation.stock![stockIndex].quantity = quantity;
+      } else {
+        // Variant stock does not exist - initialize it
+        existingLocation.stock!.push({
+          variantIndex,
+          quantity,
+          lowStockThreshold: 5
+        });
+      }
+
+      // Save the updated product
+      await product.save();
+
+    } else {
+      // Location does NOT exist - create new inventory entry
+      if (!product.inventory) {
+        product.inventory = [];
+      }
+
+      product.inventory.push({
+        location,
+        stock: [{
+          variantIndex,
+          quantity,
+          lowStockThreshold: 5
+        }]
+      });
+
+      // Save the updated product
+      await product.save();
+    }
+
+    res.json({
+      success: true,
+      message: `Stock updated successfully for ${location} (variant ${variantIndex})`,
+      data: {
+        location,
+        variantIndex,
+        quantity
+      }
+    });
+
+  } catch (error: any) {
+    console.error('Error updating stock:', error);
+    res.status(500).json({
+      message: 'Failed to update stock',
+      error: error.message
+    });
+  }
+};
+
+// PUT /api/admin/inventory/:id/flag - Toggle product flags
+export const toggleFlag = async (req: Request, res: Response) => {
+  try {
+    const { flag, value } = req.body; // 'isGITagged' or 'isNewArrival'
+
+    // Validate flag type
+    if (!['isGITagged', 'isNewArrival'].includes(flag)) {
+      return res.status(400).json({ message: 'Invalid flag type' });
+    }
+
+    const product = await Product.findByIdAndUpdate(
+      req.params.id,
+      { [flag]: value },
+      { new: true }
+    );
+
+    if (!product) {
+      return res.status(404).json({ message: 'Product not found' });
+    }
+
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(400).json({ message: error.message });
+  }
+};
+
+// GET /api/admin/inventory/products - Get all products for admin management
+export const getAllInventoryProducts = async (req: Request, res: Response) => {
+  try {
+    const products = await Product.find({})
+      .populate('category')
+      .sort({ createdAt: -1 });
+
+    res.json(products);
+  } catch (error: any) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// DELETE /api/admin/inventory/:id - Deactivate product (soft delete)
+export const deactivateProduct = async (req: Request, res: Response) => {
+  try {
+    const product = await Product.findByIdAndUpdate(
+      req.params.id,
+      { isActive: false },
+      { new: true }
+    );
+
+    if (!product) {
+      return res.status(404).json({ message: 'Product not found' });
+    }
+
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(400).json({ message: error.message });
+  }
+};
+// @desc    Get delivery settings
+// @route   GET /api/admin/delivery-settings
+// @access  Private/Admin
+export const getDeliverySettings = async (req: AuthenticatedRequest, res: Response) => {
+  console.log("req.bodys",req.body)
+  try {
+    let settings = await DeliverySettings.findOne();
+
+    if (!settings) {
+      return res.json({
+        pricePerKm: 10,
+        baseCharge: 50,
+        freeDeliveryThreshold: 500,
+        storeLocations: [],
+        message: "Store locations not configured yet"
+      });
+    }
+
+    res.json(settings);
+  } catch (error) {
+    res.status(500).json({ message: "Failed to fetch delivery settings" });
+  }
+};
+
+
+export const getDeliveryLocations = async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const settings = await DeliverySettings.findOne();
+
+    if (!settings) {
+      return res.status(404).json({ message: "Delivery settings not found" });
+    }
+
+    const activeStores = settings.storeLocations.filter(s => s.isActive);
+
+    res.json(activeStores);
+  } catch (error) {
+    res.status(500).json({ message: "Failed to fetch delivery locations" });
+  }
+};
+
+
+
+// @desc    Update delivery settings
+// @route   PUT /api/admin/delivery-settings
+// @access  Private/Admin
+export const updateDeliverySettings = async (req: AuthenticatedRequest, res: Response) => {
+  console.log("req.body",req.body)
+  try {
+    const { pricePerKm, baseCharge, freeDeliveryThreshold, storeLocations } = req.body;
+
+    // ✅ Validation: At least one active store required
+    if (!storeLocations || storeLocations.length === 0) {
+      return res.status(400).json({ 
+        message: "At least one store location is required" 
+      });
+    }
+
+    // ✅ Validate at least one store is active
+    const hasActiveStore = storeLocations.some((store: any) => store.isActive);
+    if (!hasActiveStore) {
+      return res.status(400).json({ 
+        message: "At least one store must be active" 
+      });
+    }
+
+    // ✅ Validate all stores have required fields
+    for (const store of storeLocations) {
+      if (!store.name || !store.name.trim()) {
+        return res.status(400).json({ 
+          message: "All stores must have a name" 
+        });
+      }
+      if (typeof store.latitude !== 'number' || typeof store.longitude !== 'number') {
+        return res.status(400).json({ 
+          message: "All stores must have valid coordinates" 
+        });
+      }
+      if (store.latitude < -90 || store.latitude > 90) {
+        return res.status(400).json({ 
+          message: "Latitude must be between -90 and 90" 
+        });
+      }
+      if (store.longitude < -180 || store.longitude > 180) {
+        return res.status(400).json({ 
+          message: "Longitude must be between -180 and 180" 
+        });
+      }
+    }
+
+    let settings = await DeliverySettings.findOne();
+
+    if (settings) {
+      // ✅ Update existing settings - replace entire storeLocations array
+      settings.pricePerKm = pricePerKm;
+      settings.baseCharge = baseCharge;
+      settings.freeDeliveryThreshold = freeDeliveryThreshold;
+      settings.storeLocations = storeLocations;
+      
+      await settings.save();
+    } else {
+      // ✅ Create new settings
+      settings = await DeliverySettings.create({
+        pricePerKm,
+        baseCharge,
+        freeDeliveryThreshold,
+        storeLocations
+      });
+    }
+
+    res.json(settings);
+  } catch (error: any) {
+    console.error("Error updating delivery settings:", error);
+    res.status(500).json({ 
+      message: error.message || "Failed to update delivery settings" 
+    });
   }
 };

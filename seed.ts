@@ -106,6 +106,7 @@ const adminUsersData = [
     password: 'password123',
     addresses: [{ address: '101 Admin Street', city: 'Pune', postalCode: '411001', country: 'India' }],
     role: 'admin',
+    isAdmin: true,
   },
   {
     username: 'admin2',
@@ -113,6 +114,7 @@ const adminUsersData = [
     password: 'password123',
     addresses: [{ address: '102 Admin Avenue', city: 'Pune', postalCode: '411002', country: 'India' }],
     role: 'admin',
+    isAdmin: true,
   },
 ];
 
