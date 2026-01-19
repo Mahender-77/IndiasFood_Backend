@@ -10,13 +10,14 @@ connectDB();
 const app = express();
 
 app.use(express.json());
+
 const allowedOrigins =
   process.env.NODE_ENV === 'production'
     ? ['https://indias-food-front-end.vercel.app']
     : [
-        'http://localhost:8080',  // Your Vite dev server
-        'http://localhost:5173',  // Backup Vite default port
-        'http://localhost:3000',  // If you ever use Create React App
+        'http://localhost:8080',
+        'http://localhost:5173',
+        'http://localhost:3000',
       ];
 
 app.use(cors({
@@ -24,9 +25,7 @@ app.use(cors({
   credentials: true,
 }));
 
-
 app.use('/api', allRoutes);
-
 
 // error handler
 app.use((err: any, req: Request, res: Response, next: NextFunction) => {
@@ -34,12 +33,10 @@ app.use((err: any, req: Request, res: Response, next: NextFunction) => {
   res.status(500).send('Something broke!');
 });
 
-// ⭐ Start server only locally
-if (process.env.NODE_ENV !== 'production') {
-  const PORT = process.env.PORT || 5000;
-  app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-  });
-}
+// ✅ START SERVER ALWAYS
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
 
 export default app;

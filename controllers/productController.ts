@@ -119,7 +119,6 @@ export const getPublicCategories = async (req: Request, res: Response) => {
       return { ...category.toObject(), imageUrl: productWithImage?.images[0] || '/images/placeholder.png' };
     }));
     res.json(categoriesWithImages);
-    
   } catch (error: any) {
     res.status(500).json({ message: error.message });
   }
