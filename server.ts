@@ -26,6 +26,9 @@ app.use(cors({
 }));
 
 app.use('/api', allRoutes);
+app.use('/', (req: Request, res: Response) => {
+  res.send('server is running');
+});
 
 // error handler
 app.use((err: any, req: Request, res: Response, next: NextFunction) => {
