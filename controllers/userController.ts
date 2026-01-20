@@ -314,3 +314,95 @@ export const getDeliverySettings = async (req: Request, res: Response) => {
     });
   }
 };
+
+// @desc    Geocode address to coordinates
+// @route   GET /api/user/geocode
+// @access  Public
+export const geocodeAddress = async (req: Request, res: Response) => {
+  try {
+    const { q } = req.query;
+
+    if (!q || typeof q !== 'string') {
+      return res.status(400).json({
+        message: 'Address query parameter is required'
+      });
+    }
+
+    const response = await fetch(
+      `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}&limit=1`
+    );
+
+    if (!response.ok) {
+      throw new Error('Geocoding service error');
+    }
+
+    const data = await response.json();
+
+    if (!data || data.length === 0) {
+      return res.status(404).json({
+        message: 'Address not found'
+      });
+    }
+
+    const result = data[0];
+    res.json({
+      address: result.display_name,
+      latitude: parseFloat(result.lat),
+      longitude: parseFloat(result.lon)
+    });
+
+  } catch (error) {
+    console.error('Geocoding error:', error);
+    res.status(500).json({
+      message: 'Failed to geocode address'
+    });
+  }
+};
+
+// @desc    Reverse geocode coordinates to address
+// @route   GET /api/user/reverse-geocode
+// @access  Public
+export const reverseGeocode = async (req: Request, res: Response) => {
+  try {
+    const { lat, lon } = req.query;
+
+    if (!lat || !lon) {
+      return res.status(400).json({
+        message: 'Latitude and longitude parameters are required'
+      });
+    }
+
+    const response = await fetch(
+      `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}`
+    );
+
+    if (!response.ok) {
+      throw new Error('Reverse geocoding service error');
+    }
+
+    const data = await response.json();
+
+    if (!data) {
+      return res.status(404).json({
+        message: 'Location not found'
+      });
+    }
+
+    const addr = data.address || {};
+
+    res.json({
+      address: addr.road || addr.neighbourhood || '',
+      city: addr.city || addr.town || addr.village || '',
+      postalCode: addr.postcode || '',
+      locationName: data.display_name,
+      latitude: parseFloat(lat as string),
+      longitude: parseFloat(lon as string)
+    });
+
+  } catch (error) {
+    console.error('Reverse geocoding error:', error);
+    res.status(500).json({
+      message: 'Failed to reverse geocode coordinates'
+    });
+  }
+};

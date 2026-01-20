@@ -10,6 +10,8 @@ import {
   getOrderById,
   cancelOrder,
   getDeliverySettings,
+  geocodeAddress,
+  reverseGeocode,
 } from '../controllers/userController';
 
 
@@ -33,5 +35,9 @@ router.route('/orders/:id/cancel').put(protect, cancelOrder);
 // Store locations
 
 router.route('/delivery-settings').get(getDeliverySettings);
+
+// Geocoding routes
+router.route('/geocode').get(geocodeAddress);
+router.route('/reverse-geocode').get(reverseGeocode);
 
 export default router;
