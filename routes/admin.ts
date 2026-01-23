@@ -25,10 +25,10 @@ import {
   getTotalCustomersCount,
   getActiveDeliveryPersonsCount,
   getRevenueToday,
-  getLocations,
-  createLocation,
-  updateLocation,
-  deleteLocation,
+  // getLocations,
+  // createLocation,
+  // updateLocation,
+  // deleteLocation,
   // Inventory functions
   getInventory,
   createInventoryProduct,
@@ -41,6 +41,8 @@ import {
   getDeliverySettings,
   updateDeliverySettings,
   getDeliveryLocations,
+  exportOrdersByTime,
+  exportSalesByTime,
 } from '../controllers/adminController';
 
 const router = express.Router();
@@ -58,10 +60,6 @@ router.route('/customers/:id').get(protect, admin, getCustomerById);
 // Category management
 router.route('/categories').get(protect, admin, getCategories).post(protect, admin, createCategory);
 router.route('/categories/:id').put(protect, admin, updateCategory).delete(protect, admin, deleteCategory);
-
-// Location management
-router.route('/locations').get(protect, admin, getLocations).post(protect, admin, createLocation);
-router.route('/locations/:id').put(protect, admin, updateLocation).delete(protect, admin, deleteLocation);
 
 // Delivery Persons
 router.route('/delivery-persons').get(protect, admin, getDeliveryPersons);
@@ -81,6 +79,10 @@ router.route('/export/customers').get(protect, admin, exportCustomers);
 router.route('/export/products').get(protect, admin, exportProducts);
 router.route('/export/sales').get(protect, admin, exportSales);
 
+// Time-based exports
+router.route('/export/orders/:period').get(protect, admin, exportOrdersByTime);
+router.route('/export/sales/:period').get(protect, admin, exportSalesByTime);
+
 // Stats data
 router.route('/stats/orders-count').get(protect, admin, getTotalOrdersCount);
 router.route('/stats/customers-count').get(protect, admin, getTotalCustomersCount);
@@ -96,31 +98,6 @@ router.route('/inventory/:id/stock').put(protect, admin, updateStock);
 router.route('/inventory/:id/flag').put(protect, admin, toggleFlag);
 router.route('/inventory/:location').get(protect, admin, getInventory);
 
-// TEMPORARY TEST ROUTE (remove after debugging)
-router.route('/inventory/test-products').get(async (req, res) => {
-  try {
-    console.log('🧪 Test route called - checking database directly...');
-    const Product = require('../models/Product').default;
-    const count = await Product.countDocuments({});
-    const products = await Product.find({}).limit(3).populate('category', 'name _id');
 
-    console.log(`Test route: Found ${count} products in database`);
-    console.log('Sample products:', products.map(p => ({ id: p._id, name: p.name })));
-
-    res.json({
-      success: true,
-      totalCount: count,
-      sampleProducts: products.map(p => ({
-        id: p._id,
-        name: p.name,
-        category: p.category,
-        isActive: p.isActive
-      }))
-    });
-  } catch (error: any) {
-    console.error('Test route error:', error);
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
 
 export default router;

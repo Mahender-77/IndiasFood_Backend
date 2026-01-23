@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import axios from 'axios';
 import User from '../models/User';
 import Product from '../models/Product';
 import Order from '../models/Order';
@@ -404,5 +405,63 @@ export const reverseGeocode = async (req: Request, res: Response) => {
     res.status(500).json({
       message: 'Failed to reverse geocode coordinates'
     });
+  }
+};
+
+export const checkAvailability = async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { pickup, drop } = req.body;
+    console.log("from check availability",pickup, drop);
+
+    const response = await axios.post(
+      process.env.UENGAGE_BASE + "/getServiceability",
+      {
+        store_id: process.env.STORE_ID,
+        pickupDetails: pickup,
+        dropDetails: drop
+      },
+      {
+        headers: {
+          "access-token": process.env.UENGAGE_TOKEN,
+          "Content-Type": "application/json"
+        }
+      }
+    );
+
+    res.json(response.data);
+
+  } catch (err) {
+    console.log(err.response?.data || err.message);
+    res.status(500).json({ error: "Serviceability failed" });
+  }
+
+};
+
+// @desc    Subscribe to newsletter
+// @route   POST /api/user/newsletter/subscribe
+// @access  Public (can be used by non-logged-in users)
+export const subscribeNewsletter = async (req: Request, res: Response) => {
+  const { email } = req.body;
+
+  if (!email) {
+    return res.status(400).json({ message: 'Email is required' });
+  }
+
+  try {
+    // Check if user exists with this email
+    const user = await User.findOne({ email });
+
+    if (user) {
+      // Update existing user's newsletter subscription
+      user.newsletterSubscribed = true;
+      await user.save();
+      res.json({ message: 'Successfully subscribed to newsletter' });
+    } else {
+      // For non-registered users, we could create a newsletter subscriber record
+      // For now, we'll just return success since this is a simple implementation
+      res.json({ message: 'Successfully subscribed to newsletter' });
+    }
+  } catch (error: any) {
+    res.status(500).json({ message: error.message });
   }
 };

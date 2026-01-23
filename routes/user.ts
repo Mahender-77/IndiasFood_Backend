@@ -12,6 +12,8 @@ import {
   getDeliverySettings,
   geocodeAddress,
   reverseGeocode,
+  checkAvailability,
+  subscribeNewsletter,
 } from '../controllers/userController';
 
 
@@ -39,5 +41,11 @@ router.route('/delivery-settings').get(getDeliverySettings);
 // Geocoding routes
 router.route('/geocode').get(geocodeAddress);
 router.route('/reverse-geocode').get(reverseGeocode);
+
+// Get user UEngage
+router.route('/check-availability').get(protect, checkAvailability);
+
+// Newsletter subscription
+router.route('/newsletter/subscribe').post(subscribeNewsletter);
 
 export default router;

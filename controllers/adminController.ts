@@ -1,11 +1,10 @@
 import { Request, Response, NextFunction } from 'express';
 import mongoose from 'mongoose';
-import Order from '../models/Order';
+import Order, { OrderDocument } from '../models/Order';
 import Product from '../models/Product';
 import User from '../models/User'; // Import User model
 import DeliverySettings from '../models/DeliverySettings';
 import Category from '../models/Category'; // Import Category model
-import Location from '../models/Location'; // Import Location model
 import cloudinary from '../config/cloudinary'; // Import Cloudinary config
 import upload from '../middleware/multer'; // Import Multer middleware
 import { createProductSchema, updateProductSchema, updateOrderStatusSchema, updateOrderDeliverySchema, createCategorySchema, updateCategorySchema } from '../utils/adminValidation';
@@ -15,23 +14,6 @@ interface AuthenticatedRequest extends Request {
   files?: Express.Multer.File[]; // Add files property for Multer (after @types/multer install)
 }
 
-interface OrderDocument extends mongoose.Document {
-  user: mongoose.Schema.Types.ObjectId;
-  orderItems: Array<{ name: string; qty: number; image: string; price: number; product: mongoose.Schema.Types.ObjectId; }>;
-  shippingAddress: { address: string; city: string; postalCode: string; country: string; };
-  paymentMethod: string;
-  paymentResult?: { id: string; status: string; update_time: string; email_address: string; };
-  taxPrice: number;
-  shippingPrice: number;
-  totalPrice: number;
-  isPaid: boolean;
-  paidAt?: Date;
-  isDelivered: boolean;
-  deliveredAt?: Date;
-  deliveryPerson?: mongoose.Schema.Types.ObjectId;
-  eta?: string;
-  status: string;
-}
 
 // @desc    Get all orders
 // @route   GET /api/admin/orders
@@ -97,7 +79,6 @@ export const createProduct = async (req: AuthenticatedRequest, res: Response) =>
 
     const createdProduct = await product.save();
 
-    console.log('Product created successfully:', createdProduct._id);
 
     res.status(201).json({
       message: 'Product created successfully',
@@ -130,7 +111,7 @@ export const updateOrderStatus = async (req: AuthenticatedRequest, res: Response
   const { error } = updateOrderStatusSchema.validate(req.body);
   if (error) return res.status(400).json({ message: error.details[0].message });
 
-  const { status } = req.body;
+  const { status, cancelReason } = req.body;
   const order: OrderDocument | null = await Order.findById(req.params.id);
 
   if (order) {
@@ -141,8 +122,15 @@ export const updateOrderStatus = async (req: AuthenticatedRequest, res: Response
       order.isPaid = true;
       order.paidAt = new Date();
     } else if (status === 'cancelled') {
-      // Handle cancellation logic if needed
-    } // Add more status transitions as needed
+      order.status = 'cancelled';
+      order.cancelReason = cancelReason;
+      order.cancelledAt = new Date();
+      // Clear delivery assignments when cancelled
+      order.deliveryPerson = undefined;
+      order.eta = undefined;
+    } else {
+      order.status = status;
+    }
     const updatedOrder = await order.save();
     res.json(updatedOrder);
   } else {
@@ -239,8 +227,6 @@ export const updateProduct = async (req: AuthenticatedRequest, res: Response) =>
 // @route   POST /api/admin/products/:id/images
 // @access  Private/Admin
 export const uploadProductImages = async (req: AuthenticatedRequest, res: Response) => {
-  console.log('Received request to upload images for product ID:', req.params.id);
-  console.log('Files received:', req.files);
 
   try {
     const product = await Product.findById(req.params.id);
@@ -253,7 +239,6 @@ export const uploadProductImages = async (req: AuthenticatedRequest, res: Respon
 
       const uploadedImages = [];
       for (const file of req.files as Express.Multer.File[]) {
-        console.log('Uploading file to Cloudinary:', file.originalname);
         // Use data URI for in-memory files
         const b64 = Buffer.from(file.buffer).toString("base64");
         let dataURI = "data:" + file.mimetype + ";base64," + b64;
@@ -262,12 +247,10 @@ export const uploadProductImages = async (req: AuthenticatedRequest, res: Respon
           folder: 'indias-sweet-delivery/products',
         });
         uploadedImages.push(result.secure_url);
-        console.log('Uploaded to Cloudinary, URL:', result.secure_url);
       }
 
       product.images = [...product.images, ...uploadedImages];
       await product.save();
-      console.log('Product images updated and saved to DB for product ID:', req.params.id);
       res.status(200).json({ message: 'Images uploaded successfully', images: product.images });
     } else {
       console.error('Product not found for ID:', req.params.id);
@@ -356,12 +339,13 @@ export const createCategory = async (req: AuthenticatedRequest, res: Response) =
   const { error } = createCategorySchema.validate(req.body);
   if (error) return res.status(400).json({ message: error.details[0].message });
 
-  const { name, isActive } = req.body;
+  const { name, isActive, subcategories } = req.body;
 
   try {
     const category = new Category({
       name,
       isActive,
+      subcategories,
     });
 
     const createdCategory = await category.save();
@@ -378,7 +362,7 @@ export const updateCategory = async (req: AuthenticatedRequest, res: Response) =
   const { error } = updateCategorySchema.validate(req.body);
   if (error) return res.status(400).json({ message: error.details[0].message });
 
-  const { name, isActive } = req.body;
+  const { name, isActive, subcategories } = req.body;
 
   try {
     const category = await Category.findById(req.params.id);
@@ -386,6 +370,7 @@ export const updateCategory = async (req: AuthenticatedRequest, res: Response) =
     if (category) {
       category.name = name || category.name;
       category.isActive = (isActive !== undefined) ? isActive : category.isActive;
+      category.subcategories = (subcategories !== undefined) ? subcategories : category.subcategories;
 
       const updatedCategory = await category.save();
       res.json(updatedCategory);
@@ -432,7 +417,7 @@ export const assignDeliveryPerson = async (req: AuthenticatedRequest, res: Respo
     }
     order.deliveryPerson = deliveryPersonId;
     order.eta = eta;
-    order.status = 'Assigned'; // Set status to Assigned
+    order.status = 'confirmed'; // Set status to confirmed when assigning delivery
 
     const updatedOrder = await order.save();
     res.json(updatedOrder);
@@ -529,6 +514,146 @@ export const exportSales = async (req: AuthenticatedRequest, res: Response) => {
   }
 };
 
+// @desc    Export orders by time period
+// @route   GET /api/admin/export/orders/daily?date=2024-01-01
+// @route   GET /api/admin/export/orders/weekly?week=2024-W01
+// @route   GET /api/admin/export/orders/monthly?month=2024-01
+// @access  Private/Admin
+export const exportOrdersByTime = async (req: AuthenticatedRequest, res: Response) => {
+  const { period } = req.params; // 'daily', 'weekly', 'monthly'
+  const query = req.query;
+
+  try {
+    let dateFilter: any = {};
+    let filename = '';
+
+    if (period === 'daily' && query.date) {
+      const startDate = new Date(query.date as string);
+      const endDate = new Date(startDate);
+      endDate.setDate(endDate.getDate() + 1);
+      dateFilter.createdAt = { $gte: startDate, $lt: endDate };
+      filename = `orders_daily_${query.date}.json`;
+    } else if (period === 'weekly' && query.week) {
+      const [year, week] = (query.week as string).split('-W');
+      const startDate = new Date(parseInt(year), 0, 1 + (parseInt(week) - 1) * 7);
+      const endDate = new Date(startDate);
+      endDate.setDate(startDate.getDate() + 7);
+      dateFilter.createdAt = { $gte: startDate, $lt: endDate };
+      filename = `orders_weekly_${query.week}.json`;
+    } else if (period === 'monthly' && query.month) {
+      const [year, month] = (query.month as string).split('-');
+      const startDate = new Date(parseInt(year), parseInt(month) - 1, 1);
+      const endDate = new Date(parseInt(year), parseInt(month), 1);
+      dateFilter.createdAt = { $gte: startDate, $lt: endDate };
+      filename = `orders_monthly_${query.month}.json`;
+    } else {
+      return res.status(400).json({ message: 'Invalid period or missing date parameter' });
+    }
+
+    const orders = await Order.find(dateFilter)
+      .populate('user', 'id username email')
+      .populate('deliveryPerson','id username email')
+      .lean();
+
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', `attachment; filename=${filename}`);
+    res.send(JSON.stringify(orders, null, 2));
+  } catch (error: any) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// @desc    Export sales by time period
+// @route   GET /api/admin/export/sales/daily?date=2024-01-01
+// @route   GET /api/admin/export/sales/weekly?week=2024-W01
+// @route   GET /api/admin/export/sales/monthly?month=2024-01
+// @access  Private/Admin
+export const exportSalesByTime = async (req: AuthenticatedRequest, res: Response) => {
+  const { period } = req.params; // 'daily', 'weekly', 'monthly'
+  const query = req.query;
+
+  try {
+    let dateFilter: any = { isPaid: true };
+    let filename = '';
+
+    if (period === 'daily' && query.date) {
+      const startDate = new Date(query.date as string);
+      const endDate = new Date(startDate);
+      endDate.setDate(endDate.getDate() + 1);
+      dateFilter.createdAt = { $gte: startDate, $lt: endDate };
+      filename = `sales_daily_${query.date}.json`;
+    } else if (period === 'weekly' && query.week) {
+      const [year, week] = (query.week as string).split('-W');
+      const startDate = new Date(parseInt(year), 0, 1 + (parseInt(week) - 1) * 7);
+      const endDate = new Date(startDate);
+      endDate.setDate(startDate.getDate() + 7);
+      dateFilter.createdAt = { $gte: startDate, $lt: endDate };
+      filename = `sales_weekly_${query.week}.json`;
+    } else if (period === 'monthly' && query.month) {
+      const [year, month] = (query.month as string).split('-');
+      const startDate = new Date(parseInt(year), parseInt(month) - 1, 1);
+      const endDate = new Date(parseInt(year), parseInt(month), 1);
+      dateFilter.createdAt = { $gte: startDate, $lt: endDate };
+      filename = `sales_monthly_${query.month}.json`;
+    } else {
+      return res.status(400).json({ message: 'Invalid period or missing date parameter' });
+    }
+
+    // Get sales data for the specified period
+    const salesData = await Order.aggregate([
+      { $match: dateFilter },
+      {
+        $group: {
+          _id: {
+            $dateToString: {
+              format: period === 'daily' ? '%Y-%m-%d' :
+                     period === 'weekly' ? '%Y-W%V' :
+                     '%Y-%m',
+              date: '$createdAt'
+            }
+          },
+          totalSales: { $sum: '$totalPrice' },
+          orderCount: { $sum: 1 },
+          orders: { $push: '$$ROOT' }
+        }
+      },
+      { $sort: { '_id': 1 } }
+    ]);
+
+    // Calculate total revenue for the period
+    const totalRevenueResult = await Order.aggregate([
+      { $match: dateFilter },
+      {
+        $group: {
+          _id: null,
+          totalRevenue: { $sum: '$totalPrice' },
+          totalOrders: { $sum: 1 }
+        }
+      }
+    ]);
+
+    const totalRevenue = totalRevenueResult.length > 0 ? totalRevenueResult[0].totalRevenue : 0;
+    const totalOrders = totalRevenueResult.length > 0 ? totalRevenueResult[0].totalOrders : 0;
+
+    const result = {
+      period,
+      dateRange: query,
+      summary: {
+        totalRevenue,
+        totalOrders,
+        averageOrderValue: totalOrders > 0 ? totalRevenue / totalOrders : 0
+      },
+      data: salesData
+    };
+
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', `attachment; filename=${filename}`);
+    res.send(JSON.stringify(result, null, 2));
+  } catch (error: any) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
 // @desc    Get total number of orders
 // @route   GET /api/admin/stats/orders-count
 // @access  Private/Admin
@@ -598,122 +723,6 @@ export const getRevenueToday = async (req: AuthenticatedRequest, res: Response) 
   }
 };
 
-// @desc    Get all locations
-// @route   GET /api/admin/locations
-// @access  Private/Admin
-export const getLocations = async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const locations = await Location.find({ isActive: true }).sort({ createdAt: -1 });
-    res.json(locations);
-  } catch (error: any) {
-    res.status(500).json({ message: error.message });
-  }
-};
-
-// @desc    Create a new location
-// @route   POST /api/admin/locations
-// @access  Private/Admin
-export const createLocation = async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const { name } = req.body;
-
-    // Convert to lowercase and trim
-    const locationName = name.toLowerCase().trim();
-    const displayName = name.trim();
-
-    // Check if location already exists
-    const existingLocation = await Location.findOne({ name: locationName });
-    if (existingLocation) {
-      return res.status(400).json({ message: 'Location already exists' });
-    }
-
-    const location = new Location({
-      name: locationName,
-      displayName: displayName,
-      isActive: true
-    });
-
-    const createdLocation = await location.save();
-    res.status(201).json(createdLocation);
-  } catch (error: any) {
-    if (error.code === 11000) {
-      res.status(400).json({ message: 'Location already exists' });
-    } else {
-      res.status(500).json({ message: error.message });
-    }
-  }
-};
-
-// @desc    Update a location
-// @route   PUT /api/admin/locations/:id
-// @access  Private/Admin
-export const updateLocation = async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const { name, isActive } = req.body;
-
-    const location = await Location.findById(req.params.id);
-
-    if (!location) {
-      return res.status(404).json({ message: 'Location not found' });
-    }
-
-    if (name) {
-      const locationName = name.toLowerCase().trim();
-      const displayName = name.trim();
-
-      // Check if another location with this name exists
-      const existingLocation = await Location.findOne({
-        name: locationName,
-        _id: { $ne: req.params.id }
-      });
-
-      if (existingLocation) {
-        return res.status(400).json({ message: 'Location name already exists' });
-      }
-
-      location.name = locationName;
-      location.displayName = displayName;
-    }
-
-    if (isActive !== undefined) {
-      location.isActive = isActive;
-    }
-
-    const updatedLocation = await location.save();
-    res.json(updatedLocation);
-  } catch (error: any) {
-    res.status(500).json({ message: error.message });
-  }
-};
-
-// @desc    Delete a location
-// @route   DELETE /api/admin/locations/:id
-// @access  Private/Admin
-export const deleteLocation = async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const location = await Location.findById(req.params.id);
-
-    if (!location) {
-      return res.status(404).json({ message: 'Location not found' });
-    }
-
-    // Check if any products have inventory in this location
-    const productsWithLocation = await Product.find({
-      'inventory.location': location.name
-    });
-
-    if (productsWithLocation.length > 0) {
-      return res.status(400).json({
-        message: `Cannot delete location as it has ${productsWithLocation.length} product(s) with inventory`
-      });
-    }
-
-    await Location.findByIdAndDelete(req.params.id);
-    res.json({ message: 'Location deleted successfully' });
-  } catch (error: any) {
-    res.status(500).json({ message: error.message });
-  }
-};
 
 // ==================== INVENTORY MANAGEMENT ====================
 
@@ -788,7 +797,6 @@ export const createInventoryProduct = async (req: Request, res: Response) => {
     // Populate category before sending response
     await product.populate('category');
     
-    console.log('Product created successfully:', product._id);
     res.status(201).json(product);
   } catch (error: any) {
     console.error('Error creating product:', error);
@@ -939,18 +947,6 @@ export const toggleFlag = async (req: Request, res: Response) => {
 };
 
 // GET /api/admin/inventory/products - Get all products for admin management
-export const getAllInventoryProducts = async (req: Request, res: Response) => {
-  try {
-    const products = await Product.find({})
-      .populate('category')
-      .sort({ createdAt: -1 });
-
-    res.json(products);
-  } catch (error: any) {
-    res.status(500).json({ message: error.message });
-  }
-};
-
 // DELETE /api/admin/inventory/:id - Deactivate product (soft delete)
 export const deactivateProduct = async (req: Request, res: Response) => {
   try {
@@ -973,7 +969,7 @@ export const deactivateProduct = async (req: Request, res: Response) => {
 // @route   GET /api/admin/delivery-settings
 // @access  Private/Admin
 export const getDeliverySettings = async (req: AuthenticatedRequest, res: Response) => {
-  console.log("req.bodys",req.body)
+  
   try {
     let settings = await DeliverySettings.findOne();
 
@@ -1016,7 +1012,6 @@ export const getDeliveryLocations = async (req: AuthenticatedRequest, res: Respo
 // @route   PUT /api/admin/delivery-settings
 // @access  Private/Admin
 export const updateDeliverySettings = async (req: AuthenticatedRequest, res: Response) => {
-  console.log("req.body",req.body)
   try {
     const { pricePerKm, baseCharge, freeDeliveryThreshold, storeLocations } = req.body;
 

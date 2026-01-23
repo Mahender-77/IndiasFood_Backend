@@ -12,6 +12,8 @@ export interface IUser {
   username: string;
   email: string;
   password: string;
+  phone?: string;
+  newsletterSubscribed?: boolean;
   addresses: Array<{
     address: string;
     city: string;
@@ -43,6 +45,8 @@ const UserSchema = new mongoose.Schema<UserDocument, UserModel>({
   username: { type: String, required: true, unique: true },
   email: { type: String, required: true, unique: true },
   password: { type: String, required: true },
+  phone: { type: String },
+  newsletterSubscribed: { type: Boolean, default: false },
   addresses: [{
     address: { type: String, required: true },
     city: { type: String, required: true },

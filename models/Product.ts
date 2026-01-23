@@ -61,6 +61,7 @@ export interface IProduct {
 
   // Relations & Status
   category: mongoose.Types.ObjectId;      // Reference to category
+  subcategory?: string;                   // Subcategory name or ID
   isActive: boolean;                      // Product active status
 }
 
@@ -182,6 +183,11 @@ const ProductSchema = new mongoose.Schema<IProduct & Document>({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Category',
     required: [true, 'Category is required']
+  },
+  subcategory: {
+    type: String,
+    trim: true,
+    maxlength: [100, 'Subcategory name cannot exceed 100 characters']
   },
   isActive: { type: Boolean, default: true }
 }, {

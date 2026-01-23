@@ -58,6 +58,11 @@ export const updateProductSchema = Joi.object({
 
 export const updateOrderStatusSchema = Joi.object({
   status: Joi.string().valid('placed', 'confirmed', 'out_for_delivery', 'delivered', 'cancelled').required(),
+  cancelReason: Joi.string().when('status', {
+    is: 'cancelled',
+    then: Joi.string().min(1).max(500).required(),
+    otherwise: Joi.string().optional()
+  }),
 });
 
 export const updateOrderDeliverySchema = Joi.object({
@@ -72,9 +77,17 @@ export const assignDeliveryPersonSchema = Joi.object({
 export const createCategorySchema = Joi.object({
   name: Joi.string().min(3).max(50).required(),
   isActive: Joi.boolean().optional(),
+  subcategories: Joi.array().items(Joi.object({
+    name: Joi.string().min(1).max(50).required(),
+    isActive: Joi.boolean().optional(),
+  })).optional(),
 });
 
 export const updateCategorySchema = Joi.object({
   name: Joi.string().min(3).max(50).optional(),
   isActive: Joi.boolean().optional(),
+  subcategories: Joi.array().items(Joi.object({
+    name: Joi.string().min(1).max(50).required(),
+    isActive: Joi.boolean().optional(),
+  })).optional(),
 });

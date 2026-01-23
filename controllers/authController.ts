@@ -15,7 +15,7 @@ export const registerUser = async (req: Request, res: Response) => {
   const { error } = registerSchema.validate(req.body);
   if (error) return res.status(400).json({ message: error.details[0].message });
 
-  const { username, email, password, addresses } = req.body;
+  const { username, email, password, phone, addresses } = req.body;
 
   try {
     const hashedPassword = await bcrypt.hash(password, 12);
@@ -27,6 +27,7 @@ export const registerUser = async (req: Request, res: Response) => {
       username,
       email,
       password: hashedPassword,
+      phone,
       addresses: addresses || [],
     });
     await user.save();
