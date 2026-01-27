@@ -12,21 +12,21 @@ const generateToken = (id: string) => {
   });
 };
 
-// Configure nodemailer transporter
-export const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST, // MUST be smtp.gmail.com
-  port: Number(process.env.SMTP_PORT), // 587
-  secure: false, // IMPORTANT for 587
-  auth: {
-    user: process.env.SMTP_EMAIL,
-    pass: process.env.SMTP_PASSWORD,
-  },
-  tls: {
-    rejectUnauthorized: false
-  },
-  // Force IPv4 to avoid IPv6 localhost connection issues
-  family: 4,
-});
+// // Configure nodemailer transporter
+// export const transporter = nodemailer.createTransport({
+//   host: process.env.SMTP_HOST, // MUST be smtp.gmail.com
+//   port: Number(process.env.SMTP_PORT), // 587
+//   secure: false, // IMPORTANT for 587
+//   auth: {
+//     user: process.env.SMTP_EMAIL,
+//     pass: process.env.SMTP_PASSWORD,
+//   },
+//   tls: {
+//     rejectUnauthorized: false
+//   },
+//   // Force IPv4 to avoid IPv6 localhost connection issues
+//   family: 4,
+// });
 
 export const registerUser = async (req: Request, res: Response) => {
   const { error } = registerSchema.validate(req.body);
@@ -108,111 +108,111 @@ export const getUserProfile = async (req: Request, res: Response) => {
     res.status(404).json({ message: 'User not found' });
   }
 };
-export const forgotPassword = async (req: Request, res: Response) => {
-  try {
-    const { email } = req.body;
+// export const forgotPassword = async (req: Request, res: Response) => {
+//   try {
+//     const { email } = req.body;
 
-    const user = await User.findOne({ email });
-    if (!user) {
-      return res.status(404).json({ message: 'User not found' });
-    }
+//     const user = await User.findOne({ email });
+//     if (!user) {
+//       return res.status(404).json({ message: 'User not found' });
+//     }
 
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+//     const otp = Math.floor(100000 + Math.random() * 900000).toString();
 
-    user.resetOTP = otp;
-    user.resetOTPExpiry = new Date(Date.now() + 10 * 60 * 1000);
-    user.resetOTPAttempts = 0;
-    await user.save();
+//     user.resetOTP = otp;
+//     user.resetOTPExpiry = new Date(Date.now() + 10 * 60 * 1000);
+//     user.resetOTPAttempts = 0;
+//     await user.save();
 
-    // Try to send email, but don't fail if email service is not configured
-    console.log('SMTP CHECK:', {
-      host: process.env.SMTP_HOST,
-      port: process.env.SMTP_PORT,
-      email: process.env.SMTP_EMAIL,
-    });
+//     // Try to send email, but don't fail if email service is not configured
+//     console.log('SMTP CHECK:', {
+//       host: process.env.SMTP_HOST,
+//       port: process.env.SMTP_PORT,
+//       email: process.env.SMTP_EMAIL,
+//     });
     
-    try {
-      await transporter.sendMail({
-        from: `"India's Food" <${process.env.SMTP_EMAIL}>`,
-        to: email,
-        subject: 'Password Reset OTP',
-        html: `<h2>Your OTP: ${otp}</h2><p>Valid for 10 minutes</p>`,
-      });
-      console.log(`OTP sent to ${email}: ${otp}`);
-    } catch (emailError) {
-      // Log OTP to console for development if email fails
-      console.log('Email service not configured. OTP for development:', otp);
-      console.error('Email error:', emailError);
-    }
+//     try {
+//       await transporter.sendMail({
+//         from: `"India's Food" <${process.env.SMTP_EMAIL}>`,
+//         to: email,
+//         subject: 'Password Reset OTP',
+//         html: `<h2>Your OTP: ${otp}</h2><p>Valid for 10 minutes</p>`,
+//       });
+//       console.log(`OTP sent to ${email}: ${otp}`);
+//     } catch (emailError) {
+//       // Log OTP to console for development if email fails
+//       console.log('Email service not configured. OTP for development:', otp);
+//       console.error('Email error:', emailError);
+//     }
 
-    res.json({ message: 'OTP sent successfully' });
-  } catch (err: any) {
-    console.error('Forgot password error:', err);
-    res.status(500).json({ message: err.message || 'Failed to send OTP' });
-  }
-};
-export const verifyOTP = async (req: Request, res: Response) => {
-  try {
-    const { email, otp } = req.body;
+//     res.json({ message: 'OTP sent successfully' });
+//   } catch (err: any) {
+//     console.error('Forgot password error:', err);
+//     res.status(500).json({ message: err.message || 'Failed to send OTP' });
+//   }
+// };
+// export const verifyOTP = async (req: Request, res: Response) => {
+//   try {
+//     const { email, otp } = req.body;
 
-    const user = await User.findOne({ email });
+//     const user = await User.findOne({ email });
 
-    if (!user || !user.resetOTP || !user.resetOTPExpiry) {
-      return res.status(400).json({ message: 'Invalid request' });
-    }
+//     if (!user || !user.resetOTP || !user.resetOTPExpiry) {
+//       return res.status(400).json({ message: 'Invalid request' });
+//     }
 
-    // ⛔ Expired OTP
-    if (user.resetOTPExpiry < new Date()) {
-      return res.status(400).json({ message: 'OTP expired' });
-    }
+//     // ⛔ Expired OTP
+//     if (user.resetOTPExpiry < new Date()) {
+//       return res.status(400).json({ message: 'OTP expired' });
+//     }
 
-    // 🔒 Too many attempts
-    if ((user.resetOTPAttempts ?? 0) >= 5) {
-      return res.status(429).json({
-        message: 'Too many invalid attempts. Please resend OTP.',
-      });
-    }
+//     // 🔒 Too many attempts
+//     if ((user.resetOTPAttempts ?? 0) >= 5) {
+//       return res.status(429).json({
+//         message: 'Too many invalid attempts. Please resend OTP.',
+//       });
+//     }
 
-    // ❌ Wrong OTP
-    if (user.resetOTP !== otp) {
-      user.resetOTPAttempts = (user.resetOTPAttempts ?? 0) + 1;
-      await user.save();
-      return res.status(400).json({ message: 'Invalid OTP' });
-    }
+//     // ❌ Wrong OTP
+//     if (user.resetOTP !== otp) {
+//       user.resetOTPAttempts = (user.resetOTPAttempts ?? 0) + 1;
+//       await user.save();
+//       return res.status(400).json({ message: 'Invalid OTP' });
+//     }
 
-    // ✅ OTP verified
-    res.json({ message: 'OTP verified' });
-  } catch (err) {
-    res.status(500).json({ message: 'Failed to verify OTP' });
-  }
-};
+//     // ✅ OTP verified
+//     res.json({ message: 'OTP verified' });
+//   } catch (err) {
+//     res.status(500).json({ message: 'Failed to verify OTP' });
+//   }
+// };
 
-export const resetPassword = async (req: Request, res: Response) => {
-  try {
-    const { email, otp, password } = req.body;
+// export const resetPassword = async (req: Request, res: Response) => {
+//   try {
+//     const { email, otp, password } = req.body;
 
-    const user = await User.findOne({ email });
+//     const user = await User.findOne({ email });
 
-    if (
-      !user ||
-      user.resetOTP !== otp ||
-      !user.resetOTPExpiry ||
-      user.resetOTPExpiry < new Date()
-    ) {
-      return res.status(400).json({ message: 'Invalid or expired OTP' });
-    }
+//     if (
+//       !user ||
+//       user.resetOTP !== otp ||
+//       !user.resetOTPExpiry ||
+//       user.resetOTPExpiry < new Date()
+//     ) {
+//       return res.status(400).json({ message: 'Invalid or expired OTP' });
+//     }
 
-    user.password = await bcrypt.hash(password, 10);
+//     user.password = await bcrypt.hash(password, 10);
 
-    // 🧹 Clear OTP data
-    user.resetOTP = undefined;
-    user.resetOTPExpiry = undefined;
-    user.resetOTPAttempts = undefined;
+//     // 🧹 Clear OTP data
+//     user.resetOTP = undefined;
+//     user.resetOTPExpiry = undefined;
+//     user.resetOTPAttempts = undefined;
 
-    await user.save();
+//     await user.save();
 
-    res.json({ message: 'Password reset successful' });
-  } catch (err) {
-    res.status(500).json({ message: 'Failed to reset password' });
-  }
-};
+//     res.json({ message: 'Password reset successful' });
+//   } catch (err) {
+//     res.status(500).json({ message: 'Failed to reset password' });
+//   }
+// };

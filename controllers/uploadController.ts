@@ -34,12 +34,13 @@ const BUNNY_API_KEY = process.env.BUNNY_API_KEY!;
 const BUNNY_REGION = process.env.BUNNY_REGION!;
 const BUNNY_CDN_URL = process.env.BUNNY_CDN_URL!;
 
-console.log(BUNNY_STORAGE_ZONE, BUNNY_API_KEY, BUNNY_REGION, BUNNY_CDN_URL);
+
 
 /* ===============================
    UPLOAD CONTROLLER
 ================================ */
 export const uploadImages = async (req: Request, res: Response) => {
+  
   try {
     if (!req.files || !Array.isArray(req.files) || req.files.length === 0) {
       return res.status(400).json({ message: 'No images uploaded' });
@@ -73,7 +74,20 @@ export const uploadImages = async (req: Request, res: Response) => {
     });
 
   } catch (error: any) {
-    console.error('Bunny upload error:', error.message);
-    res.status(500).json({ message: 'Failed to upload images' });
+    console.error("❌ Bunny upload failed");
+  
+    if (error.response) {
+      console.error("Status:", error.response.status);
+      console.error("Data:", error.response.data);
+      console.error("Headers:", error.response.headers);
+    } else {
+      console.error("Message:", error.message);
+    }
+  
+    res.status(500).json({
+      message: "Failed to upload images",
+      bunnyError: error.response?.data || error.message
+    });
   }
-};
+  
+}

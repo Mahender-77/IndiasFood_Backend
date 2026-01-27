@@ -1,10 +1,11 @@
 import express, { Request, Response, NextFunction } from 'express';
 import dotenv from 'dotenv';
+dotenv.config();
 import cors from 'cors';
 import connectDB from './utils/db';
 import allRoutes from './routes';
 
-dotenv.config();
+
 connectDB();
 
 const app = express();

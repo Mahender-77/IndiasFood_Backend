@@ -5,7 +5,10 @@ import Product from '../models/Product';
 import User from '../models/User'; // Import User model
 import DeliverySettings from '../models/DeliverySettings';
 import Category from '../models/Category'; // Import Category model
-import cloudinary from '../config/cloudinary'; // Import Cloudinary config
+import axios from 'axios';
+import path from 'path';
+import crypto from 'crypto';
+
 import upload from '../middleware/multer'; // Import Multer middleware
 import { createProductSchema, updateProductSchema, updateOrderStatusSchema, updateOrderDeliverySchema, createCategorySchema, updateCategorySchema } from '../utils/adminValidation';
 
@@ -226,39 +229,54 @@ export const updateProduct = async (req: AuthenticatedRequest, res: Response) =>
 // @desc    Upload product images
 // @route   POST /api/admin/products/:id/images
 // @access  Private/Admin
-export const uploadProductImages = async (req: AuthenticatedRequest, res: Response) => {
-
+export const uploadProductImages = async (
+  req: AuthenticatedRequest,
+  res: Response
+) => {
   try {
     const product = await Product.findById(req.params.id);
 
-    if (product) {
-      if (!req.files || req.files.length === 0) {
-        console.error('No image files provided for product ID:', req.params.id);
-        return res.status(400).json({ message: 'No image files provided.' });
-      }
-
-      const uploadedImages = [];
-      for (const file of req.files as Express.Multer.File[]) {
-        // Use data URI for in-memory files
-        const b64 = Buffer.from(file.buffer).toString("base64");
-        let dataURI = "data:" + file.mimetype + ";base64," + b64;
-
-        const result = await cloudinary.uploader.upload(dataURI, {
-          folder: 'indias-sweet-delivery/products',
-        });
-        uploadedImages.push(result.secure_url);
-      }
-
-      product.images = [...product.images, ...uploadedImages];
-      await product.save();
-      res.status(200).json({ message: 'Images uploaded successfully', images: product.images });
-    } else {
-      console.error('Product not found for ID:', req.params.id);
-      res.status(404).json({ message: 'Product not found' });
+    if (!product) {
+      return res.status(404).json({ message: "Product not found" });
     }
+
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({ message: "No image files provided." });
+    }
+
+    const uploadedImages: string[] = [];
+
+    for (const file of req.files as Express.Multer.File[]) {
+      const ext = path.extname(file.originalname);
+      const fileName = `products/${crypto.randomUUID()}${ext}`;
+
+      const uploadUrl = `https://storage.bunnycdn.com/${process.env.BUNNY_STORAGE_ZONE}/${fileName}`;
+
+      await axios.put(uploadUrl, file.buffer, {
+        headers: {
+          AccessKey: process.env.BUNNY_API_KEY!,
+          "Content-Type": file.mimetype,
+        },
+        maxBodyLength: Infinity,
+      });
+
+      // IMPORTANT: use Pull Zone CDN URL
+      const publicUrl = `${process.env.BUNNY_CDN_URL}/${fileName}`;
+      uploadedImages.push(publicUrl);
+    }
+
+    product.images = [...(product.images || []), ...uploadedImages];
+    await product.save();
+
+    res.status(200).json({
+      message: "Images uploaded successfully",
+      images: product.images,
+    });
   } catch (error: any) {
-    console.error('Cloudinary upload error:', error);
-    res.status(500).json({ message: error.message || 'Image upload failed' });
+    console.error("Bunny upload error:", error);
+    res.status(500).json({
+      message: error.message || "Image upload failed",
+    });
   }
 };
 
