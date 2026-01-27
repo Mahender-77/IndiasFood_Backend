@@ -13,6 +13,9 @@ export interface IUser {
   email: string;
   password: string;
   phone?: string;
+  resetOTP?: string;
+  resetOTPExpiry?: Date;
+  resetOTPAttempts?: number;
   newsletterSubscribed?: boolean;
   addresses: Array<{
     address: string;
@@ -46,6 +49,9 @@ const UserSchema = new mongoose.Schema<UserDocument, UserModel>({
   email: { type: String, required: true, unique: true },
   password: { type: String, required: true },
   phone: { type: String },
+  resetOTP: { type: String },
+  resetOTPExpiry: { type: Date },
+  resetOTPAttempts: { type: Number, default: 0 },
   newsletterSubscribed: { type: Boolean, default: false },
   addresses: [{
     address: { type: String, required: true },

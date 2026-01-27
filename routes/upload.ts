@@ -1,9 +1,5 @@
 import express from 'express';
-import {
-  generateCloudinarySignature,
-  uploadImages,
-  uploadArray
-} from '../controllers/uploadController';
+import { uploadArray, uploadImages } from '../controllers/uploadController';
 import { protect } from '../middleware/auth';
 
 const router = express.Router();
@@ -11,11 +7,11 @@ const router = express.Router();
 /**
  * Generate Cloudinary Signature
  */
-router.post(
-  '/cloudinary-sign',
-  protect,
-  generateCloudinarySignature
-);
+// router.post(
+//   '/cloudinary-sign',
+//   protect,
+//   generateCloudinarySignature
+// );
 
 /**
  * Upload Images Route
@@ -32,25 +28,12 @@ router.post(
   // 🔐 Authentication
   protect,
 
-  // 🐛 Debug - before multer
-  (req, res, next) => {
-    console.log('🚀 Upload route hit');
-    console.log('➡️ Content-Type:', req.headers['content-type']);
-    next();
-  },
-
+ 
   // 📤 Multer middleware
   uploadArray,
 
-  // 🐛 Debug - after multer
-  (req, res, next) => {
-    console.log('✅ After multer');
-    console.log('Files received:', req.files);
-    console.log('Files count:', Array.isArray(req.files) ? req.files.length : 0);
-    next();
-  },
 
-  // ☁️ Cloudinary upload handler
+  // ☁️ BunnyCDN upload handler
   uploadImages
 );
 
