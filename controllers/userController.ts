@@ -323,42 +323,47 @@ export const geocodeAddress = async (req: Request, res: Response) => {
   try {
     const { q } = req.query;
 
-    if (!q || typeof q !== 'string') {
-      return res.status(400).json({
-        message: 'Address query parameter is required'
-      });
+    if (!q || typeof q !== "string") {
+      return res.status(400).json({ message: "Address query is required" });
     }
 
-    const response = await fetch(
-      `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}&limit=1`
-    );
+    const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}&limit=1`;
+
+    const response = await fetch(url, {
+      headers: {
+        "User-Agent": "YourAppName/1.0 (support@yourdomain.com)"
+      }
+    });
+
+    console.log("NOMINATIM STATUS:", response.status);
+
+    const text = await response.text();
+    console.log("NOMINATIM RAW RESPONSE:", text);
 
     if (!response.ok) {
-      throw new Error('Geocoding service error');
-    }
-
-    const data = await response.json();
-
-    if (!data || data.length === 0) {
-      return res.status(404).json({
-        message: 'Address not found'
+      return res.status(response.status).json({
+        message: "Geocoding service failed",
+        raw: text
       });
     }
 
-    const result = data[0];
+    const data = JSON.parse(text);
+
+    if (!data || !data.length) {
+      return res.status(404).json({ message: "Address not found" });
+    }
+
     res.json({
-      address: result.display_name,
-      latitude: parseFloat(result.lat),
-      longitude: parseFloat(result.lon)
+      latitude: Number(data[0].lat),
+      longitude: Number(data[0].lon)
     });
 
   } catch (error) {
-    console.error('Geocoding error:', error);
-    res.status(500).json({
-      message: 'Failed to geocode address'
-    });
+    console.error("GEOCODE ERROR:", error);
+    res.status(500).json({ message: "Internal geocoding error" });
   }
 };
+
 
 // @desc    Reverse geocode coordinates to address
 // @route   GET /api/user/reverse-geocode
@@ -368,45 +373,50 @@ export const reverseGeocode = async (req: Request, res: Response) => {
     const { lat, lon } = req.query;
 
     if (!lat || !lon) {
-      return res.status(400).json({
-        message: 'Latitude and longitude parameters are required'
-      });
+      return res.status(400).json({ message: "lat and lon required" });
     }
 
-    const response = await fetch(
-      `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}`
-    );
+    const url = `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}`;
+
+    const response = await fetch(url, {
+      headers: {
+        "User-Agent": "YourAppName/1.0 (support@yourdomain.com)"
+      }
+    });
+
+    console.log("REVERSE NOMINATIM STATUS:", response.status);
+
+    const text = await response.text();
+    console.log("REVERSE NOMINATIM RAW:", text);
 
     if (!response.ok) {
-      throw new Error('Reverse geocoding service error');
-    }
-
-    const data = await response.json();
-
-    if (!data) {
-      return res.status(404).json({
-        message: 'Location not found'
+      return res.status(response.status).json({
+        message: "Reverse geocode failed",
+        raw: text
       });
     }
 
+    const data = JSON.parse(text);
     const addr = data.address || {};
 
     res.json({
-      address: addr.road || addr.neighbourhood || '',
-      city: addr.city || addr.town || addr.village || '',
-      postalCode: addr.postcode || '',
-      locationName: data.display_name,
-      latitude: parseFloat(lat as string),
-      longitude: parseFloat(lon as string)
+      address:
+        addr.road ||
+        addr.suburb ||
+        addr.neighbourhood ||
+        "",
+      city: addr.city || addr.town || addr.village || "",
+      postalCode: addr.postcode || "",
+      locationName: data.display_name || ""
     });
 
-  } catch (error) {
-    console.error('Reverse geocoding error:', error);
-    res.status(500).json({
-      message: 'Failed to reverse geocode coordinates'
-    });
+  } catch (err) {
+    console.error("REVERSE GEOCODE ERROR:", err);
+    res.status(500).json({ message: "Reverse geocoding error" });
   }
 };
+
+
 
 export const checkAvailability = async (req: AuthenticatedRequest, res: Response) => {
   try {
