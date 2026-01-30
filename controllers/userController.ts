@@ -364,57 +364,118 @@ export const geocodeAddress = async (req: Request, res: Response) => {
   }
 };
 
+export const searchLocation = async (req: Request, res: Response) => {
+  const q = req.query.q as string;
 
-// @desc    Reverse geocode coordinates to address
-// @route   GET /api/user/reverse-geocode
-// @access  Public
-export const reverseGeocode = async (req: Request, res: Response) => {
+  if (!q) {
+    return res.status(400).json({ error: "q is required" });
+  }
+
   try {
-    const { lat, lon } = req.query;
-
-    if (!lat || !lon) {
-      return res.status(400).json({ message: "lat and lon required" });
-    }
-
-    const url = `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}`;
-
-    const response = await fetch(url, {
-      headers: {
-        "User-Agent": "YourAppName/1.0 (support@yourdomain.com)"
+    const response = await fetch(
+      `https://api.olamaps.io/places/v1/geocode?query=${encodeURIComponent(q)}`,
+      {
+        headers: {
+          "x-api-key": process.env.OLA_KEY as string,
+        },
       }
-    });
-
-    console.log("REVERSE NOMINATIM STATUS:", response.status);
-
-    const text = await response.text();
-    console.log("REVERSE NOMINATIM RAW:", text);
+    );
 
     if (!response.ok) {
-      return res.status(response.status).json({
-        message: "Reverse geocode failed",
-        raw: text
-      });
+      const errorText = await response.text();
+      console.error(`Ola Maps API error (${response.status}):`, errorText);
+      return res.status(response.status).json({ error: errorText });
     }
 
-    const data = JSON.parse(text);
-    const addr = data.address || {};
+    const data = await response.json();
+    
+    console.log('Search response:', JSON.stringify(data, null, 2)); // Debug log
 
-    res.json({
-      address:
-        addr.road ||
-        addr.suburb ||
-        addr.neighbourhood ||
-        "",
-      city: addr.city || addr.town || addr.village || "",
-      postalCode: addr.postcode || "",
-      locationName: data.display_name || ""
-    });
+    const results = data.results.map((item: any) => ({
+      lat: item.geometry.location.lat.toString(),
+      lng: item.geometry.location.lng.toString(),
+      display_name: item.formatted_address,
+    }));
 
+    res.json(results);
   } catch (err) {
-    console.error("REVERSE GEOCODE ERROR:", err);
-    res.status(500).json({ message: "Reverse geocoding error" });
+    console.error("Search error:", err);
+    res.status(500).json({ error: "Search failed" });
   }
 };
+  
+// @desc    Reverse geocode coordinates to address
+// @route   GET /user/reverse-geocode
+// @access  Public
+export const reverseGeocode = async (req: Request, res: Response) => {
+  const lat = req.query.lat as string;
+  const lng = req.query.lng as string;
+
+  if (!lat || !lng) {
+    return res.status(400).json({ error: "lat and lng are required" });
+  }
+
+  try {
+    // Try with X-API-Key header instead of query parameter
+    const response = await fetch(
+      `https://api.olamaps.io/places/v1/reverse-geocode?latlng=${lat},${lng}`,
+      {
+        headers: {
+          "X-API-Key": process.env.OLA_KEY as string,
+          "X-Request-Id": Date.now().toString(),
+        },
+      }
+    );
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`Ola Maps API error (${response.status}):`, errorText);
+      
+      // If domain restriction error, return a fallback
+      if (response.status === 403) {
+        return res.json({ 
+          address: `${lat}, ${lng}`,
+          error: "Domain restriction - please add your domain to Ola Maps settings"
+        });
+      }
+      
+      throw new Error(`Ola Maps API error: ${response.status}`);
+    }
+
+    const data = await response.json();
+    
+    // Debug: Log the actual response structure
+    console.log('Reverse geocode response:', JSON.stringify(data, null, 2));
+
+    // Try different response structures
+    let address = `${lat}, ${lng}`; // Default fallback
+
+    if (data.results && Array.isArray(data.results) && data.results.length > 0) {
+      address = data.results[0].formatted_address || data.results[0].name || address;
+    } else if (data.formatted_address) {
+      address = data.formatted_address;
+    } else if (data.name) {
+      address = data.name;
+    } else if (data.address) {
+      if (typeof data.address === 'string') {
+        address = data.address;
+      } else if (data.address.label) {
+        address = data.address.label;
+      } else if (data.address.formatted_address) {
+        address = data.address.formatted_address;
+      }
+    }
+
+    res.json({ address });
+  } catch (err) {
+    console.error("Reverse geocode error:", err);
+    res.status(500).json({ 
+      error: "Reverse geocoding failed",
+      address: `${lat}, ${lng}` // Return coordinates as fallback
+    });
+  }
+};
+
 
 
 
