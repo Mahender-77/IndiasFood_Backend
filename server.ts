@@ -14,7 +14,7 @@ app.use(express.json());
 
 const allowedOrigins =
   process.env.NODE_ENV === 'production'
-    ? ['https://indias-food-front-end.vercel.app/']
+    ? ['https://indias-food-front-end.vercel.app']
     : [
         'http://localhost:8080',
         'http://localhost:5173',
