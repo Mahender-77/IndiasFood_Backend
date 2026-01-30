@@ -376,30 +376,29 @@ export const searchLocation = async (req: Request, res: Response) => {
       `https://api.olamaps.io/places/v1/geocode?query=${encodeURIComponent(q)}`,
       {
         headers: {
-          "x-api-key": process.env.OLA_KEY as string,
+          "x-api-key": process.env.OLA_PLACES_API_KEY as string,
         },
       }
     );
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error(`Ola Maps API error (${response.status}):`, errorText);
+      console.error("Ola Maps search error:", errorText);
       return res.status(response.status).json({ error: errorText });
     }
 
     const data = await response.json();
-    
-    console.log('Search response:', JSON.stringify(data, null, 2)); // Debug log
 
-    const results = data.results.map((item: any) => ({
-      lat: item.geometry.location.lat.toString(),
-      lng: item.geometry.location.lng.toString(),
-      display_name: item.formatted_address,
+    // ✅ Correct parsing
+    const results = (data?.data || []).map((item: any) => ({
+      lat: item.geometry?.location?.lat?.toString(),
+      lng: item.geometry?.location?.lng?.toString(),
+      display_name: item.formatted_address || item.name,
     }));
 
     res.json(results);
-  } catch (err) {
-    console.error("Search error:", err);
+  } catch (error) {
+    console.error("Search error:", error);
     res.status(500).json({ error: "Search failed" });
   }
 };
@@ -416,62 +415,40 @@ export const reverseGeocode = async (req: Request, res: Response) => {
   }
 
   try {
-    // Try with X-API-Key header instead of query parameter
     const response = await fetch(
       `https://api.olamaps.io/places/v1/reverse-geocode?latlng=${lat},${lng}`,
       {
         headers: {
-          "X-API-Key": process.env.OLA_KEY as string,
-          "X-Request-Id": Date.now().toString(),
+          "x-api-key": process.env.OLA_PLACES_API_KEY as string,
         },
       }
     );
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error(`Ola Maps API error (${response.status}):`, errorText);
-      
-      // If domain restriction error, return a fallback
-      if (response.status === 403) {
-        return res.json({ 
-          address: `${lat}, ${lng}`,
-          error: "Domain restriction - please add your domain to Ola Maps settings"
-        });
-      }
-      
-      throw new Error(`Ola Maps API error: ${response.status}`);
+      console.error("Ola Maps reverse error:", errorText);
+      return res.json({
+        address: `${lat}, ${lng}`,
+      });
     }
 
     const data = await response.json();
-    
-    // Debug: Log the actual response structure
-    console.log('Reverse geocode response:', JSON.stringify(data, null, 2));
 
-    // Try different response structures
-    let address = `${lat}, ${lng}`; // Default fallback
+    // ✅ Correct parsing
+    let address = `${lat}, ${lng}`;
 
-    if (data.results && Array.isArray(data.results) && data.results.length > 0) {
-      address = data.results[0].formatted_address || data.results[0].name || address;
-    } else if (data.formatted_address) {
-      address = data.formatted_address;
-    } else if (data.name) {
-      address = data.name;
-    } else if (data.address) {
-      if (typeof data.address === 'string') {
-        address = data.address;
-      } else if (data.address.label) {
-        address = data.address.label;
-      } else if (data.address.formatted_address) {
-        address = data.address.formatted_address;
-      }
+    if (data?.data && Array.isArray(data.data) && data.data.length > 0) {
+      address =
+        data.data[0].formatted_address ||
+        data.data[0].name ||
+        address;
     }
 
     res.json({ address });
-  } catch (err) {
-    console.error("Reverse geocode error:", err);
-    res.status(500).json({ 
-      error: "Reverse geocoding failed",
-      address: `${lat}, ${lng}` // Return coordinates as fallback
+  } catch (error) {
+    console.error("Reverse geocode error:", error);
+    res.status(500).json({
+      address: `${lat}, ${lng}`,
     });
   }
 };
