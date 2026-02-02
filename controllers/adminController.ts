@@ -789,48 +789,74 @@ const validateUpdateProduct = (req: Request, res: Response, next: NextFunction) 
 // POST /api/admin/inventory/products - Create new product
 export const createInventoryProduct = async (req: Request, res: Response) => {
   try {
-   
-    
     const productData = req.body;
-    
-    // Validate required fields
-    if (!productData.name || !productData.name.trim()) {
+
+    /* ---------- BASIC VALIDATION ---------- */
+
+    if (!productData.name?.trim()) {
       return res.status(400).json({ message: 'Product name is required' });
     }
-    
+
     if (!productData.category) {
       return res.status(400).json({ message: 'Category is required' });
     }
-    
-    // For variant products, originalPrice is not required
-    // For non-variant products, originalPrice IS required
-    if ((!productData.variants || productData.variants.length === 0) && 
-        (productData.originalPrice === undefined || productData.originalPrice === null)) {
-      return res.status(400).json({ message: 'Original price is required for non-variant products' });
+
+    if (!productData.store) {
+      return res.status(400).json({ message: 'Store ID is required' });
     }
-    
-    const product = new Product(productData);
-    await product.save();
-    
-    // Populate category before sending response
-    await product.populate('category');
-    
-    res.status(201).json(product);
-  } catch (error: any) {
-    console.error('Error creating product:', error);
-    console.error('Error name:', error.name);
-    console.error('Error message:', error.message);
-    
-    if (error.name === 'ValidationError') {
-      const validationErrors = Object.values(error.errors).map((err: any) => err.message);
-      return res.status(400).json({ 
-        message: 'Validation failed', 
-        errors: validationErrors,
-        details: error.errors 
+
+    if (!mongoose.Types.ObjectId.isValid(productData.store)) {
+      return res.status(400).json({ message: 'Invalid store ID' });
+    }
+
+    /* ---------- VERIFY STORE EXISTS (storeLocations.storeId) ---------- */
+
+    const storeExists = await DeliverySettings.exists({
+      storeLocations: {
+        $elemMatch: {
+          storeId: productData.store,
+          isActive: true // optional but recommended
+        }
+      }
+    });
+
+    if (!storeExists) {
+      return res.status(400).json({ message: 'Store not found or inactive' });
+    }
+
+    /* ---------- PRICE VALIDATION ---------- */
+
+    if (
+      (!productData.variants || productData.variants.length === 0) &&
+      (productData.originalPrice === undefined || productData.originalPrice <= 0)
+    ) {
+      return res.status(400).json({
+        message: 'Original price is required for non-variant products'
       });
     }
-    
-    res.status(400).json({ message: error.message, details: error.errors });
+
+    /* ---------- CREATE PRODUCT ---------- */
+
+    const product = new Product({
+      ...productData,
+      store: productData.store // 🔒 enforce store explicitly
+    });
+
+    await product.save();
+    await product.populate('category');
+
+    return res.status(201).json(product);
+  } catch (error: any) {
+    console.error('Error creating product:', error);
+
+    if (error.name === 'ValidationError') {
+      return res.status(400).json({
+        message: 'Validation failed',
+        errors: Object.values(error.errors).map((e: any) => e.message)
+      });
+    }
+
+    return res.status(500).json({ message: error.message });
   }
 };
 
@@ -987,7 +1013,6 @@ export const deactivateProduct = async (req: Request, res: Response) => {
 // @route   GET /api/admin/delivery-settings
 // @access  Private/Admin
 export const getDeliverySettings = async (req: AuthenticatedRequest, res: Response) => {
-  
   try {
     let settings = await DeliverySettings.findOne();
 
@@ -1007,96 +1032,153 @@ export const getDeliverySettings = async (req: AuthenticatedRequest, res: Respon
   }
 };
 
+// @desc    Get active delivery locations
+// @route   GET /api/admin/delivery-locations
+// @access  Private/Admin
+// GET /admin/delivery-locations
+export const getDeliveryLocations = async (req, res) => {
+  const settings = await DeliverySettings.findOne({}, { storeLocations: 1 });
 
-export const getDeliveryLocations = async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const settings = await DeliverySettings.findOne();
-
-    if (!settings) {
-      return res.status(404).json({ message: "Delivery settings not found" });
-    }
-
-    const activeStores = settings.storeLocations.filter(s => s.isActive);
-
-    res.json(activeStores);
-  } catch (error) {
-    res.status(500).json({ message: "Failed to fetch delivery locations" });
-  }
+  res.json(
+    settings.storeLocations
+      .filter(s => s.isActive)
+      .map(s => ({
+        storeId: s.storeId,        // ✅ IMPORTANT
+        name: s.name,
+        displayName: s.name,
+        city: s.city
+      }))
+  );
 };
-
 
 
 // @desc    Update delivery settings
 // @route   PUT /api/admin/delivery-settings
 // @access  Private/Admin
-export const updateDeliverySettings = async (req: AuthenticatedRequest, res: Response) => {
+export const updateDeliverySettings = async (
+  req: AuthenticatedRequest,
+  res: Response
+) => {
   try {
     const { pricePerKm, baseCharge, freeDeliveryThreshold, storeLocations } = req.body;
 
-    // ✅ Validation: At least one active store required
-    if (!storeLocations || storeLocations.length === 0) {
-      return res.status(400).json({ 
-        message: "At least one store location is required" 
+    // 1️⃣ Basic validation
+    if (!Array.isArray(storeLocations) || storeLocations.length === 0) {
+      return res.status(400).json({
+        message: "At least one store location is required"
       });
     }
 
-    // ✅ Validate at least one store is active
-    const hasActiveStore = storeLocations.some((store: any) => store.isActive);
+    // 2️⃣ At least one active store
+    const hasActiveStore = storeLocations.some((s: any) => s.isActive);
     if (!hasActiveStore) {
-      return res.status(400).json({ 
-        message: "At least one store must be active" 
+      return res.status(400).json({
+        message: "At least one store must be active"
       });
     }
 
-    // ✅ Validate all stores have required fields
-    for (const store of storeLocations) {
+    // 3️⃣ Validate each store (NO storeId validation - it's auto-generated!)
+    for (let i = 0; i < storeLocations.length; i++) {
+      const store = storeLocations[i];
+      const storeNum = i + 1;
+
       if (!store.name || !store.name.trim()) {
-        return res.status(400).json({ 
-          message: "All stores must have a name" 
+        return res.status(400).json({
+          message: `Store ${storeNum}: Store name is required`
         });
       }
-      if (typeof store.latitude !== 'number' || typeof store.longitude !== 'number') {
-        return res.status(400).json({ 
-          message: "All stores must have valid coordinates" 
+
+      if (!store.contact_number || !store.contact_number.trim()) {
+        return res.status(400).json({
+          message: `Store ${storeNum}: Contact number is required`
         });
       }
+
+      if (!store.address || !store.address.trim()) {
+        return res.status(400).json({
+          message: `Store ${storeNum}: Address is required`
+        });
+      }
+
+      if (!store.city || !store.city.trim()) {
+        return res.status(400).json({
+          message: `Store ${storeNum}: City is required`
+        });
+      }
+
+      if (typeof store.latitude !== 'number') {
+        return res.status(400).json({
+          message: `Store ${storeNum}: Valid latitude is required (received: ${typeof store.latitude})`
+        });
+      }
+
+      if (typeof store.longitude !== 'number') {
+        return res.status(400).json({
+          message: `Store ${storeNum}: Valid longitude is required (received: ${typeof store.longitude})`
+        });
+      }
+
       if (store.latitude < -90 || store.latitude > 90) {
-        return res.status(400).json({ 
-          message: "Latitude must be between -90 and 90" 
+        return res.status(400).json({
+          message: `Store ${storeNum}: Latitude must be between -90 and 90`
         });
       }
+
       if (store.longitude < -180 || store.longitude > 180) {
-        return res.status(400).json({ 
-          message: "Longitude must be between -180 and 180" 
+        return res.status(400).json({
+          message: `Store ${storeNum}: Longitude must be between -180 and 180`
         });
       }
     }
+    // 4️⃣ Process store locations - ensure storeId is generated for new stores
+    const processedStores = storeLocations.map((store: any) => {
+      // If store already has a storeId (from DB), keep it
+      // Otherwise, a new one will be auto-generated by Mongoose
+      return {
+        ...(store.storeId && { storeId: store.storeId }), // Keep existing storeId if present
+        name: store.name.trim(),
+        contact_number: store.contact_number.trim(),
+        address: store.address.trim(),
+        city: store.city.trim(),
+        latitude: store.latitude,
+        longitude: store.longitude,
+        isActive: store.isActive
+      };
+    });
 
+    // 5️⃣ Create or Update settings
     let settings = await DeliverySettings.findOne();
 
     if (settings) {
-      // ✅ Update existing settings - replace entire storeLocations array
       settings.pricePerKm = pricePerKm;
       settings.baseCharge = baseCharge;
       settings.freeDeliveryThreshold = freeDeliveryThreshold;
-      settings.storeLocations = storeLocations;
-      
+      settings.storeLocations = processedStores;
       await settings.save();
     } else {
-      // ✅ Create new settings
       settings = await DeliverySettings.create({
         pricePerKm,
         baseCharge,
         freeDeliveryThreshold,
-        storeLocations
+        storeLocations: processedStores
+      });
+    }
+    res.json(settings);
+
+  } catch (error: any) {
+    
+    // Handle Mongoose validation errors
+    if (error.name === 'ValidationError') {
+      const validationErrors = Object.values(error.errors).map((err: any) => err.message);
+      return res.status(400).json({
+        message: "Validation failed",
+        errors: validationErrors
       });
     }
 
-    res.json(settings);
-  } catch (error: any) {
-    console.error("Error updating delivery settings:", error);
-    res.status(500).json({ 
-      message: error.message || "Failed to update delivery settings" 
+    res.status(500).json({
+      message: error.message || "Failed to update delivery settings"
     });
   }
 };
+

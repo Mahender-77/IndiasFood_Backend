@@ -15,6 +15,8 @@ import {
   checkAvailability,
   subscribeNewsletter,
   searchLocation,
+  trackOrderStatus,
+  // handleUengageWebhook,
 } from '../controllers/userController';
 
 
@@ -34,6 +36,8 @@ router.route('/checkout').post(protect, createOrder);
 router.route('/orders').get(protect, getUserOrders);
 router.route('/orders/:id').get(protect, getOrderById);
 router.route('/orders/:id/cancel').put(protect, cancelOrder);
+router.route('/orders/:id/track').get(protect, trackOrderStatus);
+
 
 // Store locations
 
@@ -44,9 +48,11 @@ router.route('/search-location').get(searchLocation);
 router.route('/reverse-geocode').get(reverseGeocode);
 
 // Get user UEngage
-router.route('/check-availability').get(protect, checkAvailability);
+router.route('/check-availability').post(checkAvailability);
 
 // Newsletter subscription
 router.route('/newsletter/subscribe').post(subscribeNewsletter);
+
+
 
 export default router;
