@@ -359,6 +359,7 @@ export const getOrderById = async (req: AuthenticatedRequest, res: Response) => 
 export const cancelOrder = async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { reason } = req.body;
+  
 
     if (!reason?.trim()) {
       return res.status(400).json({ message: 'Cancellation reason is required' });
@@ -584,89 +585,46 @@ export const getDeliverySettings = async (req: Request, res: Response) => {
   }
 };
 
-// @desc    Geocode address to coordinates
-// @route   GET /api/user/geocode
-// @access  Public
-export const geocodeAddress = async (req: Request, res: Response) => {
+export const searchLocation = async (req: Request, res: Response) => {
+  const { q } = req.query;
+
+  if (!q || String(q).trim().length < 3) {
+    return res.json([]); // return empty array safely
+  }
+
   try {
-    const { q } = req.query;
+    console.log("🔎 Ola autocomplete for:", q);
 
-    if (!q || typeof q !== "string") {
-      return res.status(400).json({ message: "Address query is required" });
-    }
-
-    const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}&limit=1`;
-
-    const response = await fetch(url, {
-      headers: {
-        "User-Agent": "YourAppName/1.0 (support@yourdomain.com)"
-      }
-    });
-
-    console.log("NOMINATIM STATUS:", response.status);
+    const response = await fetch(
+      `https://api.olamaps.io/places/v1/autocomplete?input=${encodeURIComponent(
+        q as string
+      )}&api_key=${process.env.OLA_PLACES_API_KEY}`,
+      { headers: { Accept: "*/*" } }
+    );
 
     const text = await response.text();
-    console.log("NOMINATIM RAW RESPONSE:", text);
 
     if (!response.ok) {
-      return res.status(response.status).json({
-        message: "Geocoding service failed",
-        raw: text
-      });
+      console.error("❌ Ola autocomplete error:", text);
+      return res.json([]);
     }
 
     const data = JSON.parse(text);
 
-    if (!data || !data.length) {
-      return res.status(404).json({ message: "Address not found" });
-    }
-
-    res.json({
-      latitude: Number(data[0].lat),
-      longitude: Number(data[0].lon)
-    });
-
-  } catch (error) {
-    console.error("GEOCODE ERROR:", error);
-    res.status(500).json({ message: "Internal geocoding error" });
-  }
-};
-
-export const searchLocation = async (req: Request, res: Response) => {
-  const { q } = req.query;
-
-  if (!q) {
-    return res.status(400).json({ error: "q is required" });
-  }
-
-  try {
-    const response = await fetch(
-      `https://api.olamaps.io/places/v1/geocode?query=${encodeURIComponent(
-        q as string
-      )}&api_key=${process.env.OLA_PLACES_API_KEY}`,
-      {
-        headers: {
-          Accept: "*/*",
-        },
-      }
-    );
-
-    const data = await response.json();
-
-    const results = (data?.data || []).map((item: any) => ({
-      lat: item.geometry.location.lat.toString(),
-      lng: item.geometry.location.lng.toString(),
-      display_name: item.formatted_address || item.name,
+    const results = (data?.predictions || []).map((item: any) => ({
+      placeId: item.place_id,
+      title: item.structured_formatting?.main_text || item.description,
+      description: item.description,
     }));
 
+    console.log("✅ Autocomplete results:", results.length);
     res.json(results);
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Search failed" });
+    console.error("❌ Search exception:", err);
+    res.json([]);
   }
 };
 
-  
 // @desc    Reverse geocode coordinates to address
 // @route   GET /user/reverse-geocode
 // @access  Public
@@ -691,29 +649,135 @@ export const reverseGeocode = async (req: Request, res: Response) => {
 
     const data = await response.json();
 
-    console.log("RAW Ola response:", JSON.stringify(data, null, 2));
+    // console.log("RAW Ola response:", JSON.stringify(data, null, 2));
 
-    let address = `${lat}, ${lng}`;
+    // Default values
+    let fullAddress = `${lat}, ${lng}`;
+    let city = '';
+    let postalCode = '';
+    let addressLine1 = '';
 
-    // ✅ Handle ALL Ola response formats
-    if (data?.formatted_address) {
-      address = data.formatted_address;
-    } else if (data?.name) {
-      address = data.name;
-    } else if (Array.isArray(data?.data) && data.data.length > 0) {
-      address =
-        data.data[0].formatted_address ||
-        data.data[0].name ||
-        address;
+    // ✅ Extract from results array (primary response format)
+    if (data?.results && Array.isArray(data.results) && data.results.length > 0) {
+      const firstResult = data.results[0];
+      
+      // Get formatted address
+      fullAddress = firstResult.formatted_address || fullAddress;
+      
+      // Extract address components
+      const components = firstResult.address_components || [];
+      
+      for (const component of components) {
+        const types = component.types || [];
+        
+        if (types.includes('locality')) {
+          city = component.long_name || component.short_name;
+        } else if (types.includes('postal_code')) {
+          postalCode = component.long_name || component.short_name;
+        }
+      }
+      
+      // Extract first part for address line 1
+      addressLine1 = firstResult.name || fullAddress.split(',')[0]?.trim() || '';
     }
 
-    console.log("FINAL address:", address);
-    res.json({ address });
+    const responseData = {
+      address: fullAddress,
+      addressLine1,
+      city,
+      postalCode,
+      lat,
+      lng
+    };
+
+    console.log("FINAL parsed address:", responseData);
+    res.json(responseData);
   } catch (err) {
     console.error("Reverse geocode error:", err);
-    res.json({ address: `${lat}, ${lng}` });
+    res.json({ 
+      address: `${lat}, ${lng}`,
+      addressLine1: '',
+      city: '',
+      postalCode: '',
+      lat,
+      lng
+    });
   }
 };
+
+export const geocodeAddress = async (req: Request, res: Response) => {
+  const { address } = req.query;
+
+  if (!address || String(address).trim().length < 3) {
+    return res.status(400).json({ error: "Valid address is required" });
+  }
+
+  try {
+    const response = await fetch(
+      `https://api.olamaps.io/places/v1/geocode?address=${encodeURIComponent(
+        address as string
+      )}&api_key=${process.env.OLA_PLACES_API_KEY}`,
+      {
+        headers: { Accept: "*/*" },
+      }
+    );
+
+    const text = await response.text();
+
+    if (!response.ok) {
+      console.error("❌ Ola error response:", text);
+      return res.status(400).json({ error: "Ola geocode failed" });
+    }
+
+    let data: any;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      return res.status(400).json({ error: "Invalid Ola response" });
+    }
+    console.log("🧾 RAW Ola geocode:", JSON.stringify(data, null, 2));
+
+    // 🔍 Handle multiple possible response shapes
+    const results =
+      data?.geocodingResults ||
+      data?.results ||
+      data?.data;
+
+    if (!Array.isArray(results) || results.length === 0) {
+      return res.status(400).json({ error: "No geocode results" });
+    }
+
+    const geometry = results[0]?.geometry;
+
+    let lat: number | undefined;
+    let lng: number | undefined;
+
+    // ✅ Ola Maps format → coordinates: [lng, lat]
+    if (Array.isArray(geometry?.coordinates)) {
+      lng = geometry.coordinates[0];
+      lat = geometry.coordinates[1];
+    }
+    // ✅ fallback (Google-like format, future-proof)
+    else if (
+      typeof geometry?.location?.lat === "number" &&
+      typeof geometry?.location?.lng === "number"
+    ) {
+      lat = geometry.location.lat;
+      lng = geometry.location.lng;
+    }
+
+    if (typeof lat !== "number" || typeof lng !== "number") {
+      return res.status(400).json({ error: "No coordinates found" });
+    }
+
+    return res.json({ lat, lng });
+  } catch (err) {
+    console.error("❌ Geocode exception:", err);
+    return res.status(500).json({ error: "Geocode failed" });
+  }
+};
+
+
 
 
 
@@ -724,6 +788,8 @@ export const checkAvailability = async (req: AuthenticatedRequest, res: Response
   try {
     const { pickup, drop } = req.body;
    
+ console.log("UEngage",req.body)
+
 
     const response = await axios.post(
       process.env.UENGAGE_BASE + "/getServiceability",

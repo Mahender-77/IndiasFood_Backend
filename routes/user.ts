@@ -46,6 +46,7 @@ router.route('/delivery-settings').get(getDeliverySettings);
 // Geocoding routes
 router.route('/search-location').get(searchLocation);
 router.route('/reverse-geocode').get(reverseGeocode);
+router.route('/geocode-address').get(geocodeAddress)
 
 // Get user UEngage
 router.route('/check-availability').post(checkAvailability);
