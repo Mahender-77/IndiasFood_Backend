@@ -12,17 +12,9 @@ const app = express();
 
 app.use(express.json());
 
-const allowedOrigins =
-  process.env.NODE_ENV === 'production'
-    ? ['https://indias-food-front-end.vercel.app']
-    : [
-        'http://localhost:8080',
-        'http://localhost:5173',
-        'http://localhost:3000',
-      ];
 
 app.use(cors({
-  origin: allowedOrigins,
+  origin:process.env.BASE_URL,
   credentials: true,
 }));
 
