@@ -12,15 +12,8 @@ const routes_1 = __importDefault(require("./routes"));
 (0, db_1.default)();
 const app = (0, express_1.default)();
 app.use(express_1.default.json());
-const allowedOrigins = process.env.NODE_ENV === 'production'
-    ? ['https://indias-food-front-end.vercel.app']
-    : [
-        'http://localhost:8080',
-        'http://localhost:5173',
-        'http://localhost:3000',
-    ];
 app.use((0, cors_1.default)({
-    origin: allowedOrigins,
+    origin: process.env.BASE_URL,
     credentials: true,
 }));
 app.use('/api', routes_1.default);
