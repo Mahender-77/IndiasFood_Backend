@@ -1,16 +1,15 @@
-import { Request, Response, NextFunction } from 'express';
+import axios from 'axios';
+import crypto from 'crypto';
+import { NextFunction, Request, Response } from 'express';
 import mongoose from 'mongoose';
+import path from 'path';
+import Category from '../models/Category'; // Import Category model
+import DeliverySettings from '../models/DeliverySettings';
 import Order, { OrderDocument } from '../models/Order';
 import Product from '../models/Product';
 import User from '../models/User'; // Import User model
-import DeliverySettings from '../models/DeliverySettings';
-import Category from '../models/Category'; // Import Category model
-import axios from 'axios';
-import path from 'path';
-import crypto from 'crypto';
 
-import upload from '../middleware/multer'; // Import Multer middleware
-import { createProductSchema, updateProductSchema, updateOrderStatusSchema, updateOrderDeliverySchema, createCategorySchema, updateCategorySchema } from '../utils/adminValidation';
+import { createCategorySchema, createProductSchema, updateCategorySchema, updateOrderDeliverySchema, updateOrderStatusSchema, updateProductSchema } from '../utils/adminValidation';
 
 interface AuthenticatedRequest extends Request {
   user?: any; // Define a more specific User type if available

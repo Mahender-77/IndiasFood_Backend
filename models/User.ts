@@ -1,11 +1,31 @@
-import mongoose, { Document, Model, PopulatedDoc, PopulateOptions } from 'mongoose';
+import mongoose, { Document, Model, PopulatedDoc, PopulateOptions, Types } from 'mongoose';
 import { IProduct } from './Product';
 
 // Cart Item Interface for User
 export interface ICartItem {
   product: PopulatedDoc<IProduct & Document>;
   qty: number;
-  selectedVariantIndex?: number; // Made optional with default 0
+  selectedVariantIndex?: number;
+}
+
+// Enhanced Address Interface (for input/creation - without _id)
+export interface IAddress {
+  fullName: string;
+  phone: string;
+  addressLine1: string;
+  addressLine2?: string;
+  city: string;
+  postalCode: string;
+  country: string;
+  latitude: number;
+  longitude: number;
+  locationName?: string;
+  isDefault?: boolean;
+}
+
+// Address Document Interface (what's stored in DB - with _id)
+export interface IAddressDocument extends IAddress, Document {
+  _id: Types.ObjectId;
 }
 
 export interface IUser {
@@ -17,13 +37,8 @@ export interface IUser {
   resetOTPExpiry?: Date;
   resetOTPAttempts?: number;
   newsletterSubscribed?: boolean;
-  addresses: Array<{
-    address: string;
-    city: string;
-    postalCode: string;
-    country: string;
-  }>;
-  cart: ICartItem[]; // Use the dedicated interface
+  addresses: Types.DocumentArray<IAddressDocument>; // Use Mongoose DocumentArray type
+  cart: ICartItem[];
   wishlist: Array<PopulatedDoc<IProduct & Document>>;
   deliveryProfile?: {
     vehicleType?: string;
@@ -53,12 +68,22 @@ const UserSchema = new mongoose.Schema<UserDocument, UserModel>({
   resetOTPExpiry: { type: Date },
   resetOTPAttempts: { type: Number, default: 0 },
   newsletterSubscribed: { type: Boolean, default: false },
+  
+  // Enhanced addresses schema with full location data
   addresses: [{
-    address: { type: String, required: true },
+    fullName: { type: String, required: true },
+    phone: { type: String, required: true },
+    addressLine1: { type: String, required: true },
+    addressLine2: { type: String },
     city: { type: String, required: true },
     postalCode: { type: String, required: true },
-    country: { type: String, required: true },
+    country: { type: String, required: true, default: 'India' },
+    latitude: { type: Number, required: true },
+    longitude: { type: Number, required: true },
+    locationName: { type: String },
+    isDefault: { type: Boolean, default: false }
   }],
+  
   cart: [
     {
       product: { 

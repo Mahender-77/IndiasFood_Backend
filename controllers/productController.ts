@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
-import Product from '../models/Product';
 import Category from '../models/Category';
+import Product from '../models/Product';
 
 // @desc    Fetch all products with advanced filtering
 // @route   GET /api/products

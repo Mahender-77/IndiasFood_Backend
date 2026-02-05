@@ -1,8 +1,8 @@
+import axios from 'axios';
+import crypto from 'crypto';
 import { Request, Response } from 'express';
 import multer from 'multer';
 import path from 'path';
-import axios from 'axios';
-import crypto from 'crypto';
 
 /* ===============================
    MULTER CONFIG

@@ -1,6 +1,5 @@
 import { Request, Response } from 'express';
-import mongoose from 'mongoose';
-import User, { UserDocument, UserModel as IUserModel } from '../models/User'; // Import UserDocument and UserModel
+import User from '../models/User'; // Import UserDocument and UserModel
 import { deliveryApplicationSchema } from '../utils/deliveryValidation';
 
 // @desc    Apply to become a delivery partner

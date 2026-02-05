@@ -32,32 +32,39 @@ export const registerUser = async (req: Request, res: Response) => {
   const { error } = registerSchema.validate(req.body);
   if (error) return res.status(400).json({ message: error.details[0].message });
 
-  const { username, email, password, phone, addresses } = req.body;
+  const { username, email, password, phone } = req.body;
 
   try {
     const hashedPassword = await bcrypt.hash(password, 12);
 
-    let user = await User.findOne({ email });
-    if (user) return res.status(400).json({ message: 'User exists' });
+    const existingUser = await User.findOne({ email });
+    if (existingUser)
+      return res.status(400).json({ message: 'User exists' });
 
-    user = new User({
+    const user = new User({
       username,
       email,
       password: hashedPassword,
       phone,
-      addresses: addresses || [],
     });
+
     await user.save();
 
     const token = generateToken(user._id.toString());
-    res.json({
+
+    res.status(201).json({
       token,
-      user: { _id: user._id, username: user.username, email: user.email },
+      user: {
+        _id: user._id,
+        username: user.username,
+        email: user.email,
+      },
     });
   } catch (error: any) {
     res.status(500).json({ message: error.message });
   }
 };
+
 
 export const loginUser = async (req: Request, res: Response) => {
   const { error } = loginSchema.validate(req.body);

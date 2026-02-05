@@ -8,7 +8,6 @@ export const handleUengageWebhook: RequestHandler = async (req, res) => {
     const status_code = req.body?.status_code;
     const message = req.body?.message || '';
     const data = req.body?.data || {};
-
     const taskId = data.taskId;
     const orderIdToUse = data.vendor_order_id || data.orderId;
 

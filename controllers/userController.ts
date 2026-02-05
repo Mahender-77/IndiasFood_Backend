@@ -1,9 +1,9 @@
-import { Request, Response } from 'express';
 import axios from 'axios';
-import User from '../models/User';
-import Product from '../models/Product';
-import Order from '../models/Order';
+import { Request, Response } from 'express';
 import DeliverySettings from '../models/DeliverySettings';
+import Order from '../models/Order';
+import Product from '../models/Product';
+import User, { IAddress } from '../models/User';
 
 interface AuthenticatedRequest extends Request {
   user?: any;
@@ -87,6 +87,34 @@ export const updateCart = async (req: AuthenticatedRequest, res: Response) => {
   }
 };
 
+// POST /api/user/cart/merge
+export const mergeCart = async (req: AuthenticatedRequest, res: Response) => {
+  const { items } = req.body; // [{ productId, qty, selectedVariantIndex }]
+
+  const user = await User.findById(req.user._id);
+  if (!user) return res.status(404).json({ message: 'User not found' });
+
+  for (const incoming of items) {
+    const index = user.cart.findIndex(
+      (item: any) =>
+        item.product.toString() === incoming.productId &&
+        (item.selectedVariantIndex ?? 0) === (incoming.selectedVariantIndex ?? 0)
+    );
+
+    if (index > -1) {
+      user.cart[index].qty += incoming.qty;
+    } else {
+      user.cart.push(incoming);
+    }
+  }
+
+  await user.save();
+  await user.populate('cart.product');
+
+  res.json(user.cart);
+};
+
+
 // @desc    Get user wishlist
 // @route   GET /api/user/wishlist
 // @access  Private
@@ -133,11 +161,7 @@ export const toggleWishlist = async (req: AuthenticatedRequest, res: Response) =
 // @desc    Create new order
 // @route   POST /api/user/checkout
 // @access  Private
-
-
 export const createOrder = async (req: AuthenticatedRequest, res: Response) => {
- 
-
   try {
     const {
       orderItems,
@@ -145,7 +169,10 @@ export const createOrder = async (req: AuthenticatedRequest, res: Response) => {
       paymentMethod,
       taxPrice,
       shippingPrice,
-      totalPrice
+      totalPrice,
+      // NEW: Address saving fields
+      saveAddress,
+      addressData
     } = req.body;
 
     if (!orderItems || orderItems.length === 0) {
@@ -288,6 +315,52 @@ export const createOrder = async (req: AuthenticatedRequest, res: Response) => {
     const user = await User.findById(req.user._id);
     if (user) {
       user.cart = [];
+      
+      /* ---------------- 🆕 6️⃣ SAVE ADDRESS (NEW FEATURE) ---------------- */
+      // Only save if requested AND address data is provided
+      if (saveAddress && addressData) {
+        try {
+          // Check if address already exists (by comparing coordinates and address line)
+          const existingAddress = user.addresses.find(
+            addr => 
+              addr.latitude === addressData.latitude && 
+              addr.longitude === addressData.longitude &&
+              addr.addressLine1 === addressData.addressLine1
+          );
+
+          // Only add if it doesn't already exist
+          if (!existingAddress) {
+            // If this is the first address, make it default
+            const isFirstAddress = user.addresses.length === 0;
+
+            // Create new address object
+            const newAddress: IAddress = {
+              fullName: addressData.fullName,
+              phone: addressData.phone,
+              addressLine1: addressData.addressLine1,
+              addressLine2: addressData.addressLine2 || '',
+              city: addressData.city,
+              postalCode: addressData.postalCode,
+              country: addressData.country || 'India',
+              latitude: addressData.latitude,
+              longitude: addressData.longitude,
+              locationName: addressData.locationName || '',
+              isDefault: isFirstAddress
+            };
+
+            // Push to addresses - Mongoose will auto-generate _id
+            user.addresses.push(newAddress as any);
+            
+            console.log('✅ Address saved to user profile');
+          } else {
+            console.log('ℹ️ Address already exists, skipping save');
+          }
+        } catch (addressError) {
+          // Log error but don't fail the order
+          console.error('⚠️ Error saving address (non-critical):', addressError);
+        }
+      }
+
       await user.save();
     }
 
@@ -843,5 +916,215 @@ export const subscribeNewsletter = async (req: Request, res: Response) => {
     }
   } catch (error: any) {
     res.status(500).json({ message: error.message });
+  }
+};
+
+export const getSavedAddress = async (req : Request, res: Response) => {
+  try {
+    const user = await User.findById(req.user._id).select('addresses');
+    
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    res.json({
+      success: true,
+      addresses: user.addresses || []
+    });
+  } catch (error) {
+    console.error('Error fetching addresses:', error);
+    res.status(500).json({ message: 'Failed to fetch addresses' });
+  }
+}
+
+export const addNewAddress = async (req: Request, res: Response) => {
+  try {
+    const {
+      fullName,
+      phone,
+      addressLine1,
+      addressLine2,
+      city,
+      postalCode,
+      country,
+      latitude,
+      longitude,
+      locationName,
+      isDefault
+    } = req.body;
+
+    // Validate required fields
+    if (!fullName || !phone || !addressLine1 || !city || !postalCode || !latitude || !longitude) {
+      return res.status(400).json({ 
+        message: 'Missing required fields',
+        required: ['fullName', 'phone', 'addressLine1', 'city', 'postalCode', 'latitude', 'longitude']
+      });
+    }
+
+    const user = await User.findById(req.user._id);
+    
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // If this is set as default, unset other defaults
+    if (isDefault) {
+      user.addresses.forEach(addr => {
+        addr.isDefault = false;
+      });
+    }
+
+    // Create new address object (TypeScript will allow this for DocumentArray)
+    const newAddress: IAddress = {
+      fullName,
+      phone,
+      addressLine1,
+      addressLine2: addressLine2 || '',
+      city,
+      postalCode,
+      country: country || 'India',
+      latitude,
+      longitude,
+      locationName: locationName || '',
+      isDefault: isDefault || false
+    };
+
+    // Push to addresses array - Mongoose will auto-generate _id
+    user.addresses.push(newAddress as any); // Type assertion needed for DocumentArray
+    await user.save();
+
+    // Get the newly added address (with _id)
+    const addedAddress = user.addresses[user.addresses.length - 1];
+
+    res.status(201).json({
+      success: true,
+      message: 'Address added successfully',
+      address: addedAddress
+    });
+  } catch (error) {
+    console.error('Error adding address:', error);
+    res.status(500).json({ message: 'Failed to add address' });
+  }
+}
+
+export const UpdateAddress = async (req: Request, res: Response) => {
+  try {
+    const { addressId } = req.params;
+    const updateData = req.body;
+
+    const user = await User.findById(req.user._id);
+    
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    const addressIndex = user.addresses.findIndex(
+      addr => addr._id.toString() === addressId
+    );
+
+    if (addressIndex === -1) {
+      return res.status(404).json({ message: 'Address not found' });
+    }
+
+    // If setting as default, unset others
+    if (updateData.isDefault) {
+      user.addresses.forEach((addr, idx) => {
+        if (idx !== addressIndex) {
+          addr.isDefault = false;
+        }
+      });
+    }
+
+    // Update address fields individually to preserve _id
+    const address = user.addresses[addressIndex];
+    if (updateData.fullName !== undefined) address.fullName = updateData.fullName;
+    if (updateData.phone !== undefined) address.phone = updateData.phone;
+    if (updateData.addressLine1 !== undefined) address.addressLine1 = updateData.addressLine1;
+    if (updateData.addressLine2 !== undefined) address.addressLine2 = updateData.addressLine2;
+    if (updateData.city !== undefined) address.city = updateData.city;
+    if (updateData.postalCode !== undefined) address.postalCode = updateData.postalCode;
+    if (updateData.country !== undefined) address.country = updateData.country;
+    if (updateData.latitude !== undefined) address.latitude = updateData.latitude;
+    if (updateData.longitude !== undefined) address.longitude = updateData.longitude;
+    if (updateData.locationName !== undefined) address.locationName = updateData.locationName;
+    if (updateData.isDefault !== undefined) address.isDefault = updateData.isDefault;
+    
+    await user.save();
+
+    res.json({
+      success: true,
+      message: 'Address updated successfully',
+      address: user.addresses[addressIndex]
+    });
+  } catch (error) {
+    console.error('Error updating address:', error);
+    res.status(500).json({ message: 'Failed to update address' });
+  }
+};
+
+export const deleteAddress = async (req: Request, res: Response) => {
+  try {
+    const { addressId } = req.params;
+
+    const user = await User.findById(req.user._id);
+    
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    const initialLength = user.addresses.length;
+    
+    // Use pull method for better type safety
+    user.addresses.pull({ _id: addressId } as any);
+
+    if (user.addresses.length === initialLength) {
+      return res.status(404).json({ message: 'Address not found' });
+    }
+
+    await user.save();
+
+    res.json({
+      success: true,
+      message: 'Address deleted successfully'
+    });
+  } catch (error) {
+    console.error('Error deleting address:', error);
+    res.status(500).json({ message: 'Failed to delete address' });
+  }
+};
+
+export const defaultAddress = async (req: Request, res: Response) => {
+  try {
+    const { addressId } = req.params;
+
+    const user = await User.findById(req.user._id);
+    
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    let found = false;
+    user.addresses.forEach(addr => {
+      if (addr._id.toString() === addressId) {
+        addr.isDefault = true;
+        found = true;
+      } else {
+        addr.isDefault = false;
+      }
+    });
+
+    if (!found) {
+      return res.status(404).json({ message: 'Address not found' });
+    }
+
+    await user.save();
+
+    res.json({
+      success: true,
+      message: 'Default address updated successfully'
+    });
+  } catch (error) {
+    console.error('Error setting default address:', error);
+    res.status(500).json({ message: 'Failed to set default address' });
   }
 };
