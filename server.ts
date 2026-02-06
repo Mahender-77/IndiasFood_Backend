@@ -13,10 +13,16 @@ const app = express();
 app.use(express.json());
 
 
-app.use(cors({
-  origin:process.env.BASE_URL,
-  credentials: true,
-}));
+app.use(
+  cors({
+    origin: [
+      process.env.BASE_URL,
+      process.env.BASE_URL1,
+      `http://localhost:5173`
+    ].filter(Boolean),
+    credentials: true,
+  })
+);
 
 app.use('/api', allRoutes);
 app.use('/', (req: Request, res: Response) => {
