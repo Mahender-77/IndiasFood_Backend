@@ -13,16 +13,30 @@ const app = express();
 app.use(express.json());
 
 
+const allowedOrigins = [
+  process.env.BASE_URL,
+  process.env.BASE_URL1,
+  `http://localhost:5173`
+].filter(Boolean);
+
 app.use(
   cors({
-    origin: [
-      process.env.BASE_URL,
-      process.env.BASE_URL1,
-      `http://localhost:5173`
-    ].filter(Boolean),
+    origin: (origin, callback) => {
+      // Allow server-to-server, Postman, curl
+      if (!origin) return callback(null, true);
+
+      if (allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(
+        new Error(`CORS blocked for origin: ${origin}`)
+      );
+    },
     credentials: true,
   })
 );
+
 
 app.use('/api', allRoutes);
 app.use('/', (req: Request, res: Response) => {
