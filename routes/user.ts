@@ -31,7 +31,7 @@ const router = express.Router();
 
 // Cart routes
 router.route('/cart').get(protect, getUserCart).post(protect, updateCart);
-router.route('/cart/merge').post(protect,mergeCart)
+router.route('/cart/merge').post(mergeCart)
   
 // Wishlist routes
 router.route('/wishlist').get(protect, getUserWishlist).post(protect, toggleWishlist);
@@ -42,6 +42,8 @@ router.route('/addresses').post(protect, addNewAddress)
 router.route('/addresses/:addressId').put(protect, UpdateAddress)
 router.route('/addresses/:addressId').delete(protect,deleteAddress)
 router.route('/addresses/:addressId/set-default').put(protect,defaultAddress)
+
+
 
 // Order routes
 router.route('/checkout').post(protect, createOrder);

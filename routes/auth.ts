@@ -1,5 +1,5 @@
 import express from 'express';
-import { registerUser, loginUser, getUserProfile } from '../controllers/authController';
+import { registerUser, loginUser, getUserProfile, sendPhoneOtp, verifyPhoneOtp, loginWithOtp, resetPassword } from '../controllers/authController';
 import { protect } from '../middleware/auth';
 
 const router = express.Router();
@@ -10,5 +10,13 @@ router.get('/profile', protect, getUserProfile);
 // router.post('/forgot-password', forgotPassword);
 // router.post('/verify-otp', verifyOTP);
 // router.post('/reset-password', resetPassword);
+//SMS
+router.route('/send-otp').post(sendPhoneOtp) 
+router.route('/verify-otp').post(verifyPhoneOtp)
+// Login with OTP (passwordless login)
+router.post('/login-with-otp', loginWithOtp);
+
+// Reset password (after OTP verification)
+router.post('/reset-password', resetPassword);
 
 export default router;

@@ -32,11 +32,12 @@ export interface IUser {
   username: string;
   email: string;
   password: string;
-  phone?: string;
+  phone: string;
   resetOTP?: string;
   resetOTPExpiry?: Date;
   resetOTPAttempts?: number;
   newsletterSubscribed?: boolean;
+  isPhoneVerified?:boolean;
   addresses: Types.DocumentArray<IAddressDocument>; // Use Mongoose DocumentArray type
   cart: ICartItem[];
   wishlist: Array<PopulatedDoc<IProduct & Document>>;
@@ -62,12 +63,13 @@ export interface UserModel extends Model<UserDocument> {
 const UserSchema = new mongoose.Schema<UserDocument, UserModel>({
   username: { type: String, required: true, unique: true },
   email: { type: String, required: true, unique: true },
-  password: { type: String, required: true },
-  phone: { type: String },
+  password: { type: String },
+  phone: { type: String, required: true, unique: true },
   resetOTP: { type: String },
   resetOTPExpiry: { type: Date },
   resetOTPAttempts: { type: Number, default: 0 },
   newsletterSubscribed: { type: Boolean, default: false },
+  isPhoneVerified: { type: Boolean, default: false },
   
   // Enhanced addresses schema with full location data
   addresses: [{
