@@ -4,6 +4,7 @@ import DeliverySettings from '../models/DeliverySettings';
 import Order from '../models/Order';
 import Product from '../models/Product';
 import User, { IAddress } from '../models/User';
+import Otp from '../models/Otp';
 
 interface AuthenticatedRequest extends Request {
   user?: any;
@@ -851,11 +852,6 @@ export const geocodeAddress = async (req: Request, res: Response) => {
 };
 
 
-
-
-
-
-
 export const checkAvailability = async (req: AuthenticatedRequest, res: Response) => {
 
   try {
@@ -1128,3 +1124,5 @@ export const defaultAddress = async (req: Request, res: Response) => {
     res.status(500).json({ message: 'Failed to set default address' });
   }
 };
+
+
