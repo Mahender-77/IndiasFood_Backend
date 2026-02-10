@@ -298,6 +298,28 @@ export const createOrder = async (req: AuthenticatedRequest, res: Response) => {
 
       await createdOrder.save();
 
+      /* ---------------- DECREMENT PRODUCT STOCK ---------------- */
+      for (const item of orderItems) {
+        const productToUpdate = await Product.findById(item.product);
+
+        if (productToUpdate) {
+          if (productToUpdate.variants && productToUpdate.variants.length > 0 && item.selectedVariantIndex !== undefined) {
+            // Handle variant stock
+            const productInventory = productToUpdate.inventory?.find(
+              (inv: any) => inv.location.toString() === store.name.toString()
+            );
+
+            if (productInventory && productInventory.stock[item.selectedVariantIndex]) {
+              productInventory.stock[item.selectedVariantIndex].quantity -= item.qty;
+            }
+          } else {
+            // Handle simple product stock
+            productToUpdate.inventory[0].stock[0].quantity -= item.qty;
+          }
+          await productToUpdate.save();
+        }
+      }
+
     } catch (uengageError: any) {
       console.error(
         'U-Engage task creation failed:',
@@ -764,7 +786,7 @@ export const reverseGeocode = async (req: Request, res: Response) => {
       lng
     };
 
-    console.log("FINAL parsed address:", responseData);
+    
     res.json(responseData);
   } catch (err) {
     console.error("Reverse geocode error:", err);
@@ -853,13 +875,9 @@ export const geocodeAddress = async (req: Request, res: Response) => {
 
 
 export const checkAvailability = async (req: AuthenticatedRequest, res: Response) => {
-
+   
   try {
     const { pickup, drop } = req.body;
-   
- console.log("UEngage",req.body)
-
-
     const response = await axios.post(
       process.env.UENGAGE_BASE + "/getServiceability",
       {
