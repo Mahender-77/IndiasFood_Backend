@@ -162,19 +162,22 @@ export const toggleWishlist = async (req: AuthenticatedRequest, res: Response) =
 // @desc    Create new order
 // @route   POST /api/user/checkout
 // @access  Private
+// @desc    Create new order
+// @route   POST /api/user/checkout
+// @access  Private
+
 export const createOrder = async (req: AuthenticatedRequest, res: Response) => {
   try {
     const {
       orderItems,
       shippingAddress,
       paymentMethod,
-      taxPrice,
-      shippingPrice,
-      totalPrice,
-      // NEW: Address saving fields
-      saveAddress,
-      addressData
+      deliveryMode,
+      shippingPrice = 0,
+      taxPrice = 0
     } = req.body;
+
+    /* ---------------- VALIDATIONS ---------------- */
 
     if (!orderItems || orderItems.length === 0) {
       return res.status(400).json({ message: 'No order items' });
@@ -184,23 +187,93 @@ export const createOrder = async (req: AuthenticatedRequest, res: Response) => {
       return res.status(400).json({ message: 'Missing required fields' });
     }
 
-    if (!shippingAddress.address || !shippingAddress.city || !shippingAddress.postalCode) {
-      return res.status(400).json({ message: 'Incomplete shipping address' });
+    if (!['delivery', 'pickup'].includes(deliveryMode)) {
+      return res.status(400).json({ message: 'Invalid delivery mode' });
     }
 
-    /* ---------------- 1️⃣ GET STORE FROM PRODUCT ---------------- */
+    /* ---------------- 1️⃣ VALIDATE PRODUCTS + CALCULATE PRICE ---------------- */
 
-    // Assumption: one order = one store
-    const firstItem = orderItems[0];
+    const enrichedOrderItems: any[] = [];
+    let storeId: string | undefined;
+    let store: any;
 
-    const product = await Product.findById(firstItem.product).select('store');
-    if (!product) {
-      return res.status(400).json({ message: 'Product not found' });
+    for (const item of orderItems) {
+      const product = await Product.findById(item.product);
+
+      if (!product) {
+        return res.status(400).json({
+          message: `Product not found: ${item.product}`
+        });
+      }
+
+      let itemPrice: number;
+      let itemName = product.name;
+      const itemImage = product.images?.[0];
+
+      /* ---------------- 🔥 VARIANT LOGIC (UPDATED) ---------------- */
+
+      if (product.variants && product.variants.length > 0) {
+
+        let selectedIndex = item.selectedVariantIndex;
+
+        // ✅ AUTO SELECT if only ONE variant
+        if (product.variants.length === 1) {
+          selectedIndex = 0;
+        }
+
+        // 🚨 If multiple variants → require selection
+        if (
+          product.variants.length > 1 &&
+          (typeof selectedIndex !== 'number' || selectedIndex < 0)
+        ) {
+          return res.status(400).json({
+            message: `Please select a variant for product: ${product.name}`
+          });
+        }
+
+        const variant = product.variants[selectedIndex];
+
+        if (!variant) {
+          return res.status(400).json({
+            message: `Invalid variant selected for ${product.name}`
+          });
+        }
+
+        itemPrice = variant.offerPrice ?? variant.originalPrice;
+        itemName = `${product.name} (${variant.value})`;
+
+        item.selectedVariantIndex = selectedIndex;
+      } else {
+        itemPrice = product.offerPrice ?? product.originalPrice;
+        item.selectedVariantIndex = null;
+      }
+
+      if (itemPrice === undefined || itemPrice === null) {
+        return res.status(400).json({
+          message: `Price information missing for product: ${product.name}`
+        });
+      }
+
+      enrichedOrderItems.push({
+        product: product._id,
+        name: itemName,
+        image: itemImage,
+        qty: item.qty,
+        price: itemPrice,
+        selectedVariantIndex: item.selectedVariantIndex
+      });
+
+      if (!storeId) {
+        if (!product.store) {
+          return res.status(400).json({
+            message: `Product ${product.name} has no store assigned`
+          });
+        }
+        storeId = product.store.toString();
+      }
     }
 
-    const storeId = product.store;
-
-    /* ---------------- 2️⃣ GET STORE DETAILS FROM DELIVERY SETTINGS ---------------- */
+    /* ---------------- 2️⃣ GET STORE DETAILS ---------------- */
 
     const deliverySettings = await DeliverySettings.findOne({
       storeLocations: {
@@ -215,192 +288,123 @@ export const createOrder = async (req: AuthenticatedRequest, res: Response) => {
       return res.status(400).json({ message: 'Store not found or inactive' });
     }
 
-    const store = deliverySettings.storeLocations.find(
-      (s: any) => s.storeId.toString() === storeId.toString()
+    store = deliverySettings.storeLocations.find(
+      (s: any) => s.storeId?.toString() === storeId
     );
 
     if (!store) {
       return res.status(400).json({ message: 'Store location not found' });
     }
 
+    /* ---------------- CALCULATE TOTAL ---------------- */
+
+    const itemsPrice = enrichedOrderItems.reduce(
+      (acc, item) => acc + item.price * item.qty,
+      0
+    );
+
+    const safeShippingPrice = Number(shippingPrice) || 0;
+    const safeTaxPrice = Number(taxPrice) || 0;
+
+    let finalShippingPrice = safeShippingPrice;
+
+    if (
+      deliveryMode === 'delivery' &&
+      deliverySettings.freeDeliveryThreshold > 0 &&
+      itemsPrice >= deliverySettings.freeDeliveryThreshold
+    ) {
+      finalShippingPrice = 0;
+    }
+
+    const calculatedTotalPrice = Number(
+      (itemsPrice + finalShippingPrice + safeTaxPrice).toFixed(2)
+    );
+
     /* ---------------- 3️⃣ CREATE ORDER ---------------- */
 
     const order = new Order({
       user: req.user._id,
-      orderItems,
+      orderItems: enrichedOrderItems,
       shippingAddress,
       paymentMethod,
-      taxPrice: taxPrice || 0,
-      shippingPrice: shippingPrice || 0,
-      totalPrice,
-      status: 'placed'
+      taxPrice: safeTaxPrice,
+      shippingPrice: finalShippingPrice,
+      totalPrice: calculatedTotalPrice,
+      status: 'placed',
+      deliveryMode,
+      store: storeId,        // 🔥 ADD THIS
+      storeName: store.name  // 🔥 OPTIONAL BUT SMART
     });
 
     const createdOrder = await order.save();
 
-    /* ---------------- 4️⃣ CALL U-ENGAGE CREATE TASK ---------------- */
+    /* ---------------- 4️⃣ DECREMENT STOCK ---------------- */
 
-    const uengagePayload = {
-      storeId: process.env.STORE_ID,
+    for (const item of enrichedOrderItems) {
+      const product = await Product.findById(item.product);
+      if (!product) continue;
 
-      order_details: {
-        order_total: totalPrice,
-        paid: paymentMethod !== 'Cash On Delivery',
-        vendor_order_id: createdOrder._id.toString(),
-        order_source: 'web'
-      },
-
-      pickup_details: {
-        name: store.name,
-        contact_number: store.contact_number,
-        latitude: store.latitude,
-        longitude: store.longitude,
-        address: store.address,
-        city: store.city
-      },
-
-      drop_details: {
-        name: shippingAddress.fullName,
-        contact_number: shippingAddress.phone,
-        latitude: shippingAddress.latitude,
-        longitude: shippingAddress.longitude,
-        address: shippingAddress.address,
-        city: shippingAddress.city
-      },
-
-      order_items: orderItems.map((item: any) => ({
-        id: item.product,
-        quantity: item.qty,
-        price: item.price
-      }))
-    };
-
-    let uengageResponse: any = null;
-
-    try {
-      uengageResponse = await axios.post(
-        `${process.env.UENGAGE_BASE}/createTask`,
-        uengagePayload,
-        {
-          headers: {
-            'Content-Type': 'application/json',
-            'access-token': process.env.UENGAGE_TOKEN
-          }
-        }
+      const productInventory = product.inventory?.find(
+        (inv: any) =>
+          inv.location.toLowerCase() === store.name.toLowerCase()
       );
 
-      createdOrder.uengage = {
-        taskId: uengageResponse.data.taskId,
-        vendorOrderId: uengageResponse.data.vendor_order_id,
-        statusCode: uengageResponse.data.status_code || 'CREATED',
-        message: uengageResponse.data.message || 'Task created successfully'
-      };
-
-      await createdOrder.save();
-
-      /* ---------------- DECREMENT PRODUCT STOCK ---------------- */
-      for (const item of orderItems) {
-        const productToUpdate = await Product.findById(item.product);
-
-        if (productToUpdate) {
-          if (productToUpdate.variants && productToUpdate.variants.length > 0 && item.selectedVariantIndex !== undefined) {
-            // Handle variant stock
-            const productInventory = productToUpdate.inventory?.find(
-              (inv: any) => inv.location.toString() === store.name.toString()
-            );
-
-            if (productInventory && productInventory.stock[item.selectedVariantIndex]) {
-              productInventory.stock[item.selectedVariantIndex].quantity -= item.qty;
-            }
-          } else {
-            // Handle simple product stock
-            productToUpdate.inventory[0].stock[0].quantity -= item.qty;
-          }
-          await productToUpdate.save();
-        }
+      if (!productInventory) {
+        return res.status(400).json({
+          message: `Inventory not found for ${product.name}`
+        });
       }
 
-    } catch (uengageError: any) {
-      console.error(
-        'U-Engage task creation failed:',
-        uengageError.response?.data || uengageError.message
-      );
+      if (product.variants && product.variants.length > 0) {
 
-      createdOrder.uengage = {
-        statusCode: 'FAILED',
-        message: 'Failed to create delivery task'
-      };
-      await createdOrder.save();
+        const stockItem = productInventory.stock.find(
+          (s: any) => s.variantIndex === item.selectedVariantIndex
+        );
+
+        if (!stockItem || stockItem.quantity < item.qty) {
+          return res.status(400).json({
+            message: `Insufficient stock for ${item.name}`
+          });
+        }
+
+        stockItem.quantity -= item.qty;
+
+      } else {
+
+        const stockItem = productInventory.stock[0];
+
+        if (!stockItem || stockItem.quantity < item.qty) {
+          return res.status(400).json({
+            message: `Insufficient stock for ${item.name}`
+          });
+        }
+
+        stockItem.quantity -= item.qty;
+      }
+
+      await product.save();
     }
 
-    /* ---------------- 5️⃣ CLEAR USER CART ---------------- */
+    /* ---------------- 5️⃣ CLEAR CART ---------------- */
 
     const user = await User.findById(req.user._id);
     if (user) {
       user.cart = [];
-      
-      /* ---------------- 🆕 6️⃣ SAVE ADDRESS (NEW FEATURE) ---------------- */
-      // Only save if requested AND address data is provided
-      if (saveAddress && addressData) {
-        try {
-          // Check if address already exists (by comparing coordinates and address line)
-          const existingAddress = user.addresses.find(
-            addr => 
-              addr.latitude === addressData.latitude && 
-              addr.longitude === addressData.longitude &&
-              addr.addressLine1 === addressData.addressLine1
-          );
-
-          // Only add if it doesn't already exist
-          if (!existingAddress) {
-            // If this is the first address, make it default
-            const isFirstAddress = user.addresses.length === 0;
-
-            // Create new address object
-            const newAddress: IAddress = {
-              fullName: addressData.fullName,
-              phone: addressData.phone,
-              addressLine1: addressData.addressLine1,
-              addressLine2: addressData.addressLine2 || '',
-              city: addressData.city,
-              postalCode: addressData.postalCode,
-              country: addressData.country || 'India',
-              latitude: addressData.latitude,
-              longitude: addressData.longitude,
-              locationName: addressData.locationName || '',
-              isDefault: isFirstAddress
-            };
-
-            // Push to addresses - Mongoose will auto-generate _id
-            user.addresses.push(newAddress as any);
-            
-            console.log('✅ Address saved to user profile');
-          } else {
-            console.log('ℹ️ Address already exists, skipping save');
-          }
-        } catch (addressError) {
-          // Log error but don't fail the order
-          console.error('⚠️ Error saving address (non-critical):', addressError);
-        }
-      }
-
       await user.save();
     }
 
-    /* ---------------- RESPONSE ---------------- */
+    /* ---------------- SUCCESS ---------------- */
 
     res.status(201).json({
       message: 'Order placed successfully',
-      order: createdOrder,
-      uengage: uengageResponse?.data || null
+      order: createdOrder
     });
 
   } catch (error: any) {
-    console.error('Error creating order:', error);
+    console.error('❌ Order creation error:', error);
     res.status(500).json({
       message: 'Error creating order',
-      error: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      error: error.message
     });
   }
 };
@@ -452,82 +456,108 @@ export const getOrderById = async (req: AuthenticatedRequest, res: Response) => 
 // @desc    Cancel order
 // @route   PUT /api/user/orders/:id/cancel
 // @access  Private
-export const cancelOrder = async (req: AuthenticatedRequest, res: Response) => {
+// @desc    Cancel order
+// @route   PUT /api/user/orders/:id/cancel
+// @access  Private
+export const cancelOrder = async (
+  req: AuthenticatedRequest,
+  res: Response
+) => {
   try {
     const { reason } = req.body;
-  
 
     if (!reason?.trim()) {
-      return res.status(400).json({ message: 'Cancellation reason is required' });
+      return res.status(400).json({
+        message: 'Cancellation reason is required'
+      });
     }
 
     const order = await Order.findById(req.params.id);
 
     if (!order) {
-      return res.status(404).json({ message: 'Order not found' });
-    }
-
-    // Ownership check
-    if (order.user.toString() !== req.user._id.toString()) {
-      return res.status(403).json({ message: 'Not authorized' });
-    }
-
-    // Business rules
-    if (order.isDelivered) {
-      return res.status(400).json({ message: 'Cannot cancel delivered order' });
-    }
-
-    if (order.status === 'out_for_delivery') {
-      return res.status(400).json({ 
-        message: 'Order is out for delivery. Please contact support to cancel.' 
+      return res.status(404).json({
+        message: 'Order not found'
       });
     }
 
-    if (order.status === 'cancelled') {
-      return res.status(400).json({ message: 'Order already cancelled' });
+    // 🔐 Ownership check
+    if (order.user.toString() !== req.user._id.toString()) {
+      return res.status(403).json({
+        message: 'Not authorized'
+      });
     }
 
-    /* ---------- CANCEL U-ENGAGE TASK ---------- */
-    let uengageCancelled = false;
-    
-    if (order.uengage?.taskId) {
-      try {
-        const uengagePayload = {
-          storeId: process.env.STORE_ID,
-          taskId: order.uengage.taskId
-        };
+    // ❌ Already delivered or cancelled
+    if (order.isDelivered || order.status === 'cancelled') {
+      return res.status(400).json({
+        message: 'Order cannot be cancelled'
+      });
+    }
 
-        const { data } = await axios.post(
-          `${process.env.UENGAGE_BASE}/cancelTask`,
-          uengagePayload,
-          {
-            headers: {
-              'Content-Type': 'application/json',
-              'access-token': process.env.UENGAGE_TOKEN
-            }
+    /* ======================================================
+       📦 RESTORE STOCK (PRODUCTION SAFE VERSION)
+    ====================================================== */
+
+    for (const item of order.orderItems) {
+
+      const product = await Product.findById(item.product);
+
+      if (!product) continue;
+
+      // 🔥 Get store from product (same as order creation)
+      const deliverySettings = await DeliverySettings.findOne({
+        storeLocations: {
+          $elemMatch: {
+            storeId: product.store,
+            isActive: true
           }
-        );
+        }
+      });
 
-        // Save U-Engage response
-        order.uengage.statusCode = data.status_code || 'CANCELLED';
-        order.uengage.message = data.message || 'Order cancelled in U-Engage';
-        uengageCancelled = true;
+      if (!deliverySettings) continue;
 
-        console.log('U-Engage cancellation successful:', data);
+      const store = deliverySettings.storeLocations.find(
+        (s: any) =>
+          s.storeId?.toString() === product.store.toString()
+      );
 
-      } catch (uengageError: any) {
-        console.error(
-          'U-Engage cancel failed:',
-          uengageError.response?.data || uengageError.message
-        );
+      if (!store) continue;
 
-        // Don't block order cancellation if U-Engage fails
-        order.uengage.statusCode = 'CANCEL_FAILED';
-        order.uengage.message = 'Failed to cancel delivery task';
+      const locationName = store.name.toLowerCase();
+
+      const inventoryLocation = product.inventory?.find(
+        (inv: any) =>
+          inv.location.toLowerCase() === locationName
+      );
+
+      if (!inventoryLocation) continue;
+
+      const variantIndex =
+        typeof item.selectedVariantIndex === 'number'
+          ? item.selectedVariantIndex
+          : 0;
+
+      const stockItem = inventoryLocation.stock.find(
+        (s: any) => s.variantIndex === variantIndex
+      );
+
+      if (stockItem) {
+        stockItem.quantity += item.qty;
+      } else {
+        inventoryLocation.stock.push({
+          variantIndex,
+          quantity: item.qty,
+          lowStockThreshold: 5
+        });
       }
+
+      await product.save();
     }
 
-    /* ---------- UPDATE ORDER ---------- */
+    /* ======================================================
+       📝 UPDATE ORDER STATUS
+    ====================================================== */
+
     order.status = 'cancelled';
     order.cancelReason = reason;
     order.cancelledAt = new Date();
@@ -536,15 +566,17 @@ export const cancelOrder = async (req: AuthenticatedRequest, res: Response) => {
 
     return res.json({
       message: 'Order cancelled successfully',
-      uengageCancelled,
       order
     });
 
-  } catch (error) {
-    console.error('Cancel order error:', error);
-    return res.status(500).json({ message: 'Failed to cancel order' });
+  } catch (error: any) {
+    console.error('❌ Cancel order error:', error);
+    return res.status(500).json({
+      message: 'Failed to cancel order'
+    });
   }
 };
+
 
 
 

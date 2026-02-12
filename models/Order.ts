@@ -64,6 +64,7 @@ export interface IOrder {
   eta?: string;
 
   status: 'placed' | 'confirmed' | 'out_for_delivery' | 'delivered' | 'cancelled';
+  deliveryMode: 'delivery' | 'pickup';
 
   cancelReason?: string;
   cancelledAt?: Date;
@@ -188,6 +189,12 @@ const OrderSchema = new mongoose.Schema<OrderDocument>(
       type: String,
       enum: ['placed', 'confirmed', 'out_for_delivery', 'delivered', 'cancelled'],
       default: 'placed',
+    },
+
+    deliveryMode: {
+      type: String,
+      enum: ['delivery', 'pickup'],
+      default: 'delivery',
     },
 
     cancelReason: {

@@ -4,7 +4,6 @@ import upload from '../middleware/multer'; // Import Multer middleware
 
 import {
   getAllOrders,
-  updateOrderStatus,
   updateOrderToDelivered,
   assignDeliveryPerson,
   createProduct,
@@ -43,13 +42,14 @@ import {
   getDeliveryLocations,
   exportOrdersByTime,
   exportSalesByTime,
+  adminUpdateOrderStatus,
 } from '../controllers/adminController';
 
 const router = express.Router();
 
 // Order management
 router.route('/orders').get(protect, admin, getAllOrders);
-router.route('/orders/:id/status').put(protect, admin, updateOrderStatus);
+router.route('/orders/:id/delivery-status').put(protect, admin, adminUpdateOrderStatus);
 router.route('/orders/:id/delivery').put(protect, admin, updateOrderToDelivered);
 router.route('/orders/:id/assign-delivery').put(protect, admin, assignDeliveryPerson);
 
