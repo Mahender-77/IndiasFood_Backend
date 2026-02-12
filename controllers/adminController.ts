@@ -43,7 +43,7 @@ export const createProduct = async (req: AuthenticatedRequest, res: Response) =>
     return res.status(400).json({ message: error.details[0].message });
   }
 
-  const { name, description, originalPrice, offerPrice, variants, shelfLife, category, inventory, videoUrl, images, isActive, isGITagged, isNewArrival } = req.body;
+  const { name, description, originalPrice, offerPrice, variants, shelfLife, category, inventory, videoUrl, images, isActive, isGITagged, isNewArrival, store  } = req.body;
 
   try {
     // Check if category exists
@@ -51,7 +51,10 @@ export const createProduct = async (req: AuthenticatedRequest, res: Response) =>
     if (!categoryExists) {
       return res.status(400).json({ message: 'Invalid category ID' });
     }
-
+    if (!store) {
+      return res.status(400).json({ message: 'Store ID is required' });
+    }
+    
     // Validate variants if provided
     if (variants && variants.length > 0) {
       for (let i = 0; i < variants.length; i++) {
@@ -66,6 +69,7 @@ export const createProduct = async (req: AuthenticatedRequest, res: Response) =>
     const product = new Product({
       name,
       description,
+      store,  // 🔥 ADD THIS
       originalPrice,
       offerPrice,
       variants,
@@ -78,6 +82,7 @@ export const createProduct = async (req: AuthenticatedRequest, res: Response) =>
       isGITagged: isGITagged || false,
       isNewArrival: isNewArrival || false
     });
+    
 
     const createdProduct = await product.save();
 
@@ -106,39 +111,145 @@ export const createProduct = async (req: AuthenticatedRequest, res: Response) =>
 };
 
 
-// @desc    Update order status
-// @route   PUT /api/admin/orders/:id/status
-// @access  Private/Admin
-export const updateOrderStatus = async (req: AuthenticatedRequest, res: Response) => {
-  const { error } = updateOrderStatusSchema.validate(req.body);
-  if (error) return res.status(400).json({ message: error.details[0].message });
+// @desc    Admin Update Order Status
+// @route   PUT /api/admin/orders/:id/delivery-status
+// @access  Admin
 
-  const { status, cancelReason } = req.body;
-  const order: OrderDocument | null = await Order.findById(req.params.id);
+export const adminUpdateOrderStatus = async (req: Request, res: Response) => {
+  try {
+    const { status, reason } = req.body;
 
-  if (order) {
+    const order = await Order.findById(req.params.id);
+
+    if (!order) {
+      return res.status(404).json({ message: 'Order not found' });
+    }
+
+    // ❌ Cannot modify delivered except cancel
+    if (order.isDelivered && status !== 'cancelled') {
+      return res.status(400).json({
+        message: 'Delivered order cannot be modified'
+      });
+    }
+
+    /* =====================================================
+       🔥 ADMIN CANCEL (FOR BOTH DELIVERY & PICKUP)
+    ====================================================== */
+
+    if (status === 'cancelled') {
+
+      if (!reason?.trim()) {
+        return res.status(400).json({
+          message: 'Cancellation reason is required'
+        });
+      }
+
+      if (order.status === 'cancelled') {
+        return res.status(400).json({
+          message: 'Order already cancelled'
+        });
+      }
+
+      /* 🚚 If delivery order → cancel U-Engage silently */
+      if (
+        order.deliveryMode === 'delivery' &&
+        order.uengage?.taskId
+      ) {
+        try {
+          await axios.post(
+            `${process.env.UENGAGE_BASE}/cancelTask`,
+            {
+              storeId: process.env.STORE_ID,
+              taskId: order.uengage.taskId
+            },
+            {
+              headers: {
+                'Content-Type': 'application/json',
+                'access-token': process.env.UENGAGE_TOKEN
+              }
+            }
+          );
+
+          order.uengage.statusCode = 'CANCELLED';
+          order.uengage.message = 'Cancelled by admin';
+
+        } catch (err) {
+          order.uengage.statusCode = 'CANCEL_FAILED';
+          order.uengage.message = 'Failed to cancel delivery task';
+        }
+      }
+
+      /* 📦 RESTORE STOCK */
+      for (const item of order.orderItems) {
+        const product = await Product.findById(item.product);
+        if (!product) continue;
+
+        const variantIndex =
+          typeof item.selectedVariantIndex === 'number'
+            ? item.selectedVariantIndex
+            : 0;
+
+        const locationName = order.nearestStore?.toLowerCase();
+        if (!locationName) continue;
+
+        const inventoryLocation = product.inventory?.find(
+          inv => inv.location === locationName
+        );
+
+        if (!inventoryLocation) continue;
+
+        const stockItem = inventoryLocation.stock.find(
+          s => s.variantIndex === variantIndex
+        );
+
+        if (stockItem) {
+          stockItem.quantity += item.qty;
+        }
+
+        await product.save();
+      }
+
+      // ✅ SAVE REASON FOR USER ONLY
+      order.status = 'cancelled';
+      order.cancelReason = reason;   // 🔥 shown to user
+      order.cancelledAt = new Date();
+
+      await order.save();
+
+      return res.json(order);
+    }
+
+    /* =====================================================
+       NORMAL STATUS UPDATES
+    ====================================================== */
+
+    if (status === 'confirmed') {
+      order.status = 'confirmed';
+    }
+
+    if (status === 'out_for_delivery') {
+      order.status = 'out_for_delivery';
+    }
+
     if (status === 'delivered') {
+      order.status = 'delivered';
       order.isDelivered = true;
       order.deliveredAt = new Date();
-    } else if (status === 'confirmed') {
-      order.isPaid = true;
-      order.paidAt = new Date();
-    } else if (status === 'cancelled') {
-      order.status = 'cancelled';
-      order.cancelReason = cancelReason;
-      order.cancelledAt = new Date();
-      // Clear delivery assignments when cancelled
-      order.deliveryPerson = undefined;
-      order.eta = undefined;
-    } else {
-      order.status = status;
     }
-    const updatedOrder = await order.save();
-    res.json(updatedOrder);
-  } else {
-    res.status(404).json({ message: 'Order not found' });
+
+    await order.save();
+
+    return res.json(order);
+
+  } catch (error) {
+    console.error('Admin update error:', error);
+    return res.status(500).json({
+      message: 'Failed to update order status'
+    });
   }
 };
+
+
 
 // @desc    Update order delivery status
 // @route   PUT /api/admin/orders/:id/delivery
@@ -860,23 +971,29 @@ export const createInventoryProduct = async (req: Request, res: Response) => {
 };
 
 // PUT /api/admin/inventory/:id - Update product + flags
+// PUT /api/admin/inventory/products/:id
 export const updateInventoryProduct = async (req: Request, res: Response) => {
   try {
-    const product = await Product.findByIdAndUpdate(
+    const updatedProduct = await Product.findByIdAndUpdate(
       req.params.id,
-      req.body,
-      { new: true }
+      { $set: req.body }, // 🔥 SAFE UPDATE
+      { 
+        new: true,
+        runValidators: true // 🔥 IMPORTANT
+      }
     ).populate('category');
 
-    if (!product) {
+    if (!updatedProduct) {
       return res.status(404).json({ message: 'Product not found' });
     }
 
-    res.json(product);
+    res.status(200).json(updatedProduct);
   } catch (error: any) {
+    console.error("Update error:", error);
     res.status(400).json({ message: error.message });
   }
 };
+
 
 // PUT /api/admin/inventory/:id/stock - Update specific location stock
 export const updateStock = async (req: Request, res: Response) => {
