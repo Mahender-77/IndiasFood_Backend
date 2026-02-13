@@ -34,81 +34,142 @@ export const getAllOrders = async (req: AuthenticatedRequest, res: Response) => 
 
 
 // @desc    Create a new product
-// @route   POST /api/admin/products
+// @route   POST /api/admin/inventory/create-product
 // @access  Private/Admin
-export const createProduct = async (req: AuthenticatedRequest, res: Response) => {
-  // Validate input data
+export const createProduct = async (
+  req: AuthenticatedRequest,
+  res: Response
+) => {
+  // ---------------- VALIDATION ----------------
+
   const { error } = createProductSchema.validate(req.body);
   if (error) {
-    return res.status(400).json({ message: error.details[0].message });
+    return res.status(400).json({
+      message: error.details[0].message
+    });
   }
 
-  const { name, description, originalPrice, offerPrice, variants, shelfLife, category, inventory, videoUrl, images, isActive, isGITagged, isNewArrival, store  } = req.body;
+  const {
+    name,
+    description,
+    originalPrice,
+    offerPrice,
+    variants,
+    shelfLife,
+    category,
+    inventory,
+    videoUrl,
+    images,
+    isActive,
+    isGITagged,
+    isNewArrival,
+    store
+  } = req.body;
 
   try {
-    // Check if category exists
+    // ---------------- CHECK CATEGORY ----------------
+
     const categoryExists = await Category.findById(category);
     if (!categoryExists) {
-      return res.status(400).json({ message: 'Invalid category ID' });
+      return res.status(400).json({
+        message: 'Invalid category ID'
+      });
     }
+
+    // ---------------- CHECK STORE ----------------
+
     if (!store) {
-      return res.status(400).json({ message: 'Store ID is required' });
+      return res.status(400).json({
+        message: 'Store ID is required'
+      });
     }
-    
-    // Validate variants if provided
+
+    // ---------------- VALIDATE VARIANTS ----------------
+
     if (variants && variants.length > 0) {
       for (let i = 0; i < variants.length; i++) {
         const variant = variants[i];
-        if (!variant.type || !variant.value || variant.originalPrice < 0) {
-          return res.status(400).json({ message: `Variant ${i + 1} is missing required fields or has invalid pricing` });
+
+        if (
+          !variant.type ||
+          !variant.value ||
+          variant.originalPrice < 0
+        ) {
+          return res.status(400).json({
+            message: `Variant ${i + 1} is invalid`
+          });
         }
       }
     }
 
-    // Create the product
+    // ---------------- SAFETY: INVENTORY DEFAULT ----------------
+
+    const safeInventory = Array.isArray(inventory)
+      ? inventory
+      : [];
+
+    const safeVariants =
+      Array.isArray(variants) && variants.length > 0
+        ? variants
+        : [];
+
+    // If NO variants → force variantIndex = 0
+    if (safeVariants.length === 0) {
+      safeInventory.forEach((location: any) => {
+        location.stock = location.stock?.map((s: any) => ({
+          ...s,
+          variantIndex: 0
+        }));
+      });
+    }
+
+    // ---------------- CREATE PRODUCT ----------------
+
     const product = new Product({
-      name,
-      description,
-      store,  // 🔥 ADD THIS
-      originalPrice,
-      offerPrice,
-      variants,
-      shelfLife,
+      name: name.trim(),
+      description: description?.trim() || '',
+      store,
+      originalPrice:
+        safeVariants.length === 0 ? originalPrice : undefined,
+      offerPrice:
+        safeVariants.length === 0 ? offerPrice : undefined,
+      variants: safeVariants,
+      shelfLife: shelfLife?.trim() || '',
       category,
-      inventory,
-      videoUrl,
-      images,
-      isActive: isActive !== undefined ? isActive : true,
+      inventory: safeInventory,
+      videoUrl: videoUrl?.trim() || '',
+      images: images || [],
+      isActive: isActive ?? true,
       isGITagged: isGITagged || false,
       isNewArrival: isNewArrival || false
     });
-    
 
-    const createdProduct = await product.save();
+    const savedProduct = await product.save();
 
+    // ---------------- RETURN POPULATED + LEAN VERSION ----------------
+    // 🔥 This is the important part
 
-    res.status(201).json({
+    const populatedProduct = await Product.findById(
+      savedProduct._id
+    )
+      .populate('category')
+      .lean({ virtuals: true });
+
+    return res.status(201).json({
       message: 'Product created successfully',
-      product: createdProduct
+      product: populatedProduct
     });
 
   } catch (error: any) {
     console.error('Error creating product:', error);
 
-    // Handle mongoose validation errors
-    if (error.name === 'ValidationError') {
-      const messages = Object.values(error.errors).map((err: any) => err.message);
-      return res.status(400).json({ message: 'Validation Error', details: messages });
-    }
-
-    // Handle duplicate key errors
-    if (error.code === 11000) {
-      return res.status(400).json({ message: 'Product with this name already exists' });
-    }
-
-    res.status(500).json({ message: 'Server error while creating product' });
+    return res.status(500).json({
+      message:
+        error.message || 'Server error while creating product'
+    });
   }
 };
+
 
 
 // @desc    Admin Update Order Status
@@ -856,10 +917,15 @@ export const getRevenueToday = async (req: AuthenticatedRequest, res: Response) 
 
 export const getAllProducts = async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const products = await Product.find({}).populate('category', 'name _id');
+    const products = await Product.find()
+      .populate('category')
+      .sort({ createdAt: -1 })
+      .lean({ virtuals: true });
+
     res.json(products);
-  } catch (error: any) {
-    res.status(500).json({ message: error.message });
+  } catch (error) {
+    console.error('Inventory fetch error:', error);
+    res.status(500).json({ message: 'Failed to fetch inventory' });
   }
 }
 

@@ -306,7 +306,11 @@ export const createOrder = async (req: AuthenticatedRequest, res: Response) => {
     const safeShippingPrice = Number(shippingPrice) || 0;
     const safeTaxPrice = Number(taxPrice) || 0;
 
-    let finalShippingPrice = safeShippingPrice;
+    // 💸 What Uengage charges YOU
+const uengageDeliveryFee = safeShippingPrice;
+
+// 💰 What customer pays
+let finalShippingPrice = safeShippingPrice;
 
     if (
       deliveryMode === 'delivery' &&
@@ -329,6 +333,7 @@ export const createOrder = async (req: AuthenticatedRequest, res: Response) => {
       paymentMethod,
       taxPrice: safeTaxPrice,
       shippingPrice: finalShippingPrice,
+      uengageDeliveryFee: uengageDeliveryFee,
       totalPrice: calculatedTotalPrice,
       status: 'placed',
       deliveryMode,

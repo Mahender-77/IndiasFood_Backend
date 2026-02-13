@@ -231,18 +231,34 @@ ProductSchema.index({ name: 'text', description: 'text' });
 
 /** 🔐 Prevent invalid variantIndex values */
 ProductSchema.pre('save', function () {
-  if (this.variants && this.inventory) {
-    const maxIndex = this.variants.length - 1;
 
-    this.inventory.forEach(loc => {
+  // 🔥 CASE 1: No variants → allow only variantIndex 0
+  if (!this.variants || this.variants.length === 0) {
+
+    this.inventory?.forEach(loc => {
       loc.stock.forEach(s => {
-        if (s.variantIndex > maxIndex) {
-          throw new Error(`Invalid variantIndex ${s.variantIndex}`);
+        if (s.variantIndex !== 0) {
+          throw new Error(`Invalid variantIndex ${s.variantIndex} for non-variant product`);
         }
       });
     });
+
+    return;
   }
+
+  // 🔥 CASE 2: Has variants → validate properly
+  const maxIndex = this.variants.length - 1;
+
+  this.inventory?.forEach(loc => {
+    loc.stock.forEach(s => {
+      if (s.variantIndex < 0 || s.variantIndex > maxIndex) {
+        throw new Error(`Invalid variantIndex ${s.variantIndex}`);
+      }
+    });
+  });
+
 });
+
 
 const Product = mongoose.model<IProduct & Document>('Product', ProductSchema);
 export default Product;

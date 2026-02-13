@@ -41,6 +41,7 @@ export interface IOrder {
 
   taxPrice: number;
   shippingPrice: number;
+  uengageDeliveryFee: number;     // ✅ U-ENGAGE DELIVERY FEE
   totalPrice: number;
 
   distance?: number;
@@ -131,6 +132,7 @@ const OrderSchema = new mongoose.Schema<OrderDocument>(
       required: true,
       default: 0,
     },
+    uengageDeliveryFee: { type: Number, default: 0 },
 
     totalPrice: {
       type: Number,
