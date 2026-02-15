@@ -8,6 +8,7 @@ import DeliverySettings from '../models/DeliverySettings';
 import Order, { OrderDocument } from '../models/Order';
 import Product from '../models/Product';
 import User from '../models/User'; // Import User model
+import PDFDocument from 'pdfkit'; // Import pdfkit
 
 import { createCategorySchema, createProductSchema, updateCategorySchema, updateOrderDeliverySchema, updateOrderStatusSchema, updateProductSchema } from '../utils/adminValidation';
 
@@ -29,6 +30,7 @@ export const getAllOrders = async (req: AuthenticatedRequest, res: Response) => 
   const orders = await Order.find({ ...keyword }).populate('user', 'id username email').populate('deliveryPerson', 'id username email');
   res.json(orders);
 };
+
 
 
 
@@ -468,7 +470,7 @@ export const getCustomers = async (req: AuthenticatedRequest, res: Response) => 
       { $match: { role: 'user' } },
       { $lookup: {
           from: 'orders',
-          localField: '_id',
+          localField:'_id',
           foreignField: 'user',
           as: 'orders',
       }},
@@ -504,7 +506,8 @@ export const getCustomerById = async (req: AuthenticatedRequest, res: Response) 
     } else {
       res.status(404).json({ message: 'Customer not found' });
     }
-  } catch (error: any) {
+  }
+   catch (error: any) {
     res.status(500).json({ message: error.message });
   }
 };
@@ -862,7 +865,8 @@ export const getTotalCustomersCount = async (req: AuthenticatedRequest, res: Res
   try {
     const count = await User.countDocuments({ role: 'user' });
     res.json({ count });
-  } catch (error: any) {
+  }
+   catch (error: any) {
     res.status(500).json({ message: error.message });
   }
 };
@@ -923,7 +927,8 @@ export const getAllProducts = async (req: AuthenticatedRequest, res: Response) =
       .lean({ virtuals: true });
 
     res.json(products);
-  } catch (error) {
+  }
+   catch (error) {
     console.error('Inventory fetch error:', error);
     res.status(500).json({ message: 'Failed to fetch inventory' });
   }
@@ -1043,7 +1048,7 @@ export const updateInventoryProduct = async (req: Request, res: Response) => {
     const updatedProduct = await Product.findByIdAndUpdate(
       req.params.id,
       { $set: req.body }, // 🔥 SAFE UPDATE
-      { 
+      {
         new: true,
         runValidators: true // 🔥 IMPORTANT
       }
@@ -1360,6 +1365,142 @@ export const updateDeliverySettings = async (
 
     res.status(500).json({
       message: error.message || "Failed to update delivery settings"
+    });
+  }
+};
+
+
+// @desc    Generate invoice for an order (Admin)
+// @route   GET /api/admin/orders/:id/invoice
+// @access  Private/Admin
+export const getAdminInvoice = async (
+  req: AuthenticatedRequest,
+  res: Response
+) => {
+  try {
+    const order = await Order.findById(req.params.id)
+      .populate('user', 'username email')
+      .exec();
+
+    if (!order) {
+      return res.status(404).json({ message: 'Order not found' });
+    }
+
+    const doc = new PDFDocument({ margin: 50 });
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="invoice-${order._id}.pdf"`
+    );
+
+    doc.pipe(res);
+
+    doc.fontSize(25).text('Invoice', { align: 'center' });
+    doc.moveDown();
+
+    doc.fontSize(12).text(`Order ID: ${order._id}`);
+
+    // ✅ FIXED LINE (Safe Access)
+    const orderDate = (order as any).createdAt
+      ? new Date((order as any).createdAt).toLocaleDateString('en-IN')
+      : 'N/A';
+
+    doc.text(`Order Date: ${orderDate}`);
+
+    doc.text(
+      `Customer: ${(order.user as any).username} (${(order.user as any).email})`
+    );
+
+    doc.moveDown();
+
+    doc.fontSize(16).text('Order Items:', { underline: true });
+    doc.moveDown();
+
+    doc.fontSize(10)
+      .font('Helvetica-Bold')
+      .text('Item', 50, doc.y, { width: 200 })
+      .text('Qty', 250, doc.y, { width: 50, align: 'right' })
+      .text('Price', 300, doc.y, { width: 100, align: 'right' })
+      .text('Total', 400, doc.y, { width: 100, align: 'right' });
+
+    doc.moveDown(0.5);
+    doc.moveTo(50, doc.y).lineTo(550, doc.y).stroke();
+    doc.moveDown(0.5);
+
+    order.orderItems.forEach((item) => {
+      doc.font('Helvetica')
+        .text(item.name, 50, doc.y, { width: 200 })
+        .text(item.qty.toString(), 250, doc.y, {
+          width: 50,
+          align: 'right',
+        })
+        .text(`₹${item.price.toFixed(2)}`, 300, doc.y, {
+          width: 100,
+          align: 'right',
+        })
+        .text(`₹${(item.qty * item.price).toFixed(2)}`, 400, doc.y, {
+          width: 100,
+          align: 'right',
+        });
+
+      doc.moveDown(0.5);
+    });
+
+    doc.moveDown();
+    doc.moveTo(50, doc.y).lineTo(550, doc.y).stroke();
+    doc.moveDown(0.5);
+
+    const subtotal =
+      order.totalPrice - order.shippingPrice - order.taxPrice;
+
+    doc.font('Helvetica-Bold')
+      .text('Subtotal:', 300, doc.y, { width: 100, align: 'right' })
+      .text(`₹${subtotal.toFixed(2)}`, 400, doc.y, {
+        width: 100,
+        align: 'right',
+      });
+
+    doc.moveDown(0.3);
+
+    if (order.shippingPrice > 0) {
+      doc.font('Helvetica')
+        .text('Shipping:', 300, doc.y, { width: 100, align: 'right' })
+        .text(`₹${order.shippingPrice.toFixed(2)}`, 400, doc.y, {
+          width: 100,
+          align: 'right',
+        });
+      doc.moveDown(0.3);
+    }
+
+    if (order.taxPrice > 0) {
+      doc.font('Helvetica')
+        .text('Tax:', 300, doc.y, { width: 100, align: 'right' })
+        .text(`₹${order.taxPrice.toFixed(2)}`, 400, doc.y, {
+          width: 100,
+          align: 'right',
+        });
+      doc.moveDown(0.3);
+    }
+
+    doc.moveDown(0.5);
+
+    doc.font('Helvetica-Bold')
+      .text('Total:', 300, doc.y, { width: 100, align: 'right' })
+      .text(`₹${order.totalPrice.toFixed(2)}`, 400, doc.y, {
+        width: 100,
+        align: 'right',
+      });
+
+    doc.moveDown();
+    doc.fontSize(10).text('Thank you for your order!');
+
+    doc.end();
+  } catch (error: any) {
+    console.error('❌ Get admin invoice error:', error);
+    res.status(500).json({
+      message: 'Failed to generate invoice',
+      error: error.message,
     });
   }
 };

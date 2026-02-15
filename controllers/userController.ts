@@ -1,10 +1,13 @@
 import axios from 'axios';
 import { Request, Response } from 'express';
 import DeliverySettings from '../models/DeliverySettings';
-import Order from '../models/Order';
+import Order, { OrderDocument } from '../models/Order';
+import { HydratedDocument } from 'mongoose';
 import Product from '../models/Product';
 import User, { IAddress } from '../models/User';
 import Otp from '../models/Otp';
+import PDFDocument from 'pdfkit'; // Import pdfkit
+
 
 interface AuthenticatedRequest extends Request {
   user?: any;
@@ -585,7 +588,6 @@ export const cancelOrder = async (
 
 
 
-
 // @desc    Track order status via U-Engage
 // @route   GET /api/user/orders/:id/track
 // @access  Private
@@ -688,6 +690,154 @@ export const trackOrderStatus = async (
     return res.status(500).json({
       message: 'Failed to track order',
       error: error.response?.data?.message || error.message
+    });
+  }
+};
+
+
+// @desc    Generate invoice for an order
+// @route   GET /api/user/orders/:id/invoice
+// @access  Private
+export const getUserInvoice = async (
+  req: AuthenticatedRequest,
+  res: Response
+) => {
+  try {
+    const order = await Order.findById(req.params.id)
+      .populate('user', 'username email')
+      .exec();
+
+    if (!order) {
+      return res.status(404).json({ message: 'Order not found' });
+    }
+
+    // Ownership check
+    const orderUserId =
+      (order.user as any)._id
+        ? (order.user as any)._id.toString()
+        : order.user.toString();
+
+    if (orderUserId !== req.user._id.toString()) {
+      return res
+        .status(403)
+        .json({ message: 'Not authorized to view this invoice' });
+    }
+
+    const doc = new PDFDocument({ margin: 50 });
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="invoice-${order._id}.pdf"`
+    );
+
+    doc.pipe(res);
+
+    doc.fontSize(25).text('Invoice', { align: 'center' });
+    doc.moveDown();
+
+    doc.fontSize(12).text(`Order ID: ${order._id}`);
+
+    // ✅ Safe createdAt access
+    const orderDate = (order as any).createdAt
+      ? new Date((order as any).createdAt).toLocaleDateString('en-IN')
+      : 'N/A';
+
+    doc.text(`Order Date: ${orderDate}`);
+
+    doc.text(
+      `Customer: ${(order.user as any).username} (${(order.user as any).email})`
+    );
+
+    doc.moveDown();
+
+    doc.fontSize(16).text('Order Items:', { underline: true });
+    doc.moveDown();
+
+    doc.fontSize(10)
+      .font('Helvetica-Bold')
+      .text('Item', 50, doc.y, { width: 200 })
+      .text('Qty', 250, doc.y, { width: 50, align: 'right' })
+      .text('Price', 300, doc.y, { width: 100, align: 'right' })
+      .text('Total', 400, doc.y, { width: 100, align: 'right' });
+
+    doc.moveDown(0.5);
+    doc.moveTo(50, doc.y).lineTo(550, doc.y).stroke();
+    doc.moveDown(0.5);
+
+    order.orderItems.forEach((item) => {
+      doc.font('Helvetica')
+        .text(item.name, 50, doc.y, { width: 200 })
+        .text(item.qty.toString(), 250, doc.y, {
+          width: 50,
+          align: 'right',
+        })
+        .text(`₹${item.price.toFixed(2)}`, 300, doc.y, {
+          width: 100,
+          align: 'right',
+        })
+        .text(`₹${(item.qty * item.price).toFixed(2)}`, 400, doc.y, {
+          width: 100,
+          align: 'right',
+        });
+
+      doc.moveDown(0.5);
+    });
+
+    doc.moveDown();
+    doc.moveTo(50, doc.y).lineTo(550, doc.y).stroke();
+    doc.moveDown(0.5);
+
+    const subtotal =
+      order.totalPrice - order.shippingPrice - order.taxPrice;
+
+    doc.font('Helvetica-Bold')
+      .text('Subtotal:', 300, doc.y, { width: 100, align: 'right' })
+      .text(`₹${subtotal.toFixed(2)}`, 400, doc.y, {
+        width: 100,
+        align: 'right',
+      });
+
+    doc.moveDown(0.3);
+
+    if (order.shippingPrice > 0) {
+      doc.font('Helvetica')
+        .text('Shipping:', 300, doc.y, { width: 100, align: 'right' })
+        .text(`₹${order.shippingPrice.toFixed(2)}`, 400, doc.y, {
+          width: 100,
+          align: 'right',
+        });
+      doc.moveDown(0.3);
+    }
+
+    if (order.taxPrice > 0) {
+      doc.font('Helvetica')
+        .text('Tax:', 300, doc.y, { width: 100, align: 'right' })
+        .text(`₹${order.taxPrice.toFixed(2)}`, 400, doc.y, {
+          width: 100,
+          align: 'right',
+        });
+      doc.moveDown(0.3);
+    }
+
+    doc.moveDown(0.5);
+
+    doc.font('Helvetica-Bold')
+      .text('Total:', 300, doc.y, { width: 100, align: 'right' })
+      .text(`₹${order.totalPrice.toFixed(2)}`, 400, doc.y, {
+        width: 100,
+        align: 'right',
+      });
+
+    doc.moveDown();
+    doc.fontSize(10).text('Thank you for your order!');
+
+    doc.end();
+  } catch (error: any) {
+    console.error('❌ Get user invoice error:', error);
+    res.status(500).json({
+      message: 'Failed to generate invoice',
+      error: error.message,
     });
   }
 };
@@ -1179,5 +1329,3 @@ export const defaultAddress = async (req: Request, res: Response) => {
     res.status(500).json({ message: 'Failed to set default address' });
   }
 };
-
-
