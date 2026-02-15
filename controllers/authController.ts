@@ -158,6 +158,7 @@ export const getUserProfile = async (req: Request, res: Response) => {
       isAdmin,
       addresses: user.addresses,
       role: user.role,
+      newsletterSubscribed: user.newsletterSubscribed,
       deliveryProfile: user.deliveryProfile, // Include delivery profile if it exists
     });
   } else {

@@ -68,7 +68,12 @@ router.route('/geocode-address').get(geocodeAddress)
 router.route('/check-availability').post(checkAvailability);
 
 // Newsletter subscription
-router.route('/newsletter/subscribe').post(subscribeNewsletter);
+router.post(
+  '/newsletter/subscribe',
+  protect, // your auth middleware
+  subscribeNewsletter
+);
+
 
 
 

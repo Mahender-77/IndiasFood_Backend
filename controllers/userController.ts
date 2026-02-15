@@ -299,33 +299,43 @@ export const createOrder = async (req: AuthenticatedRequest, res: Response) => {
       return res.status(400).json({ message: 'Store location not found' });
     }
 
-    /* ---------------- CALCULATE TOTAL ---------------- */
+   /* ---------------- CALCULATE TOTAL ---------------- */
 
-    const itemsPrice = enrichedOrderItems.reduce(
-      (acc, item) => acc + item.price * item.qty,
-      0
-    );
+const itemsPrice = enrichedOrderItems.reduce(
+  (acc, item) => acc + item.price * item.qty,
+  0
+);
 
-    const safeShippingPrice = Number(shippingPrice) || 0;
-    const safeTaxPrice = Number(taxPrice) || 0;
+// Shipping from frontend (Uengage value)
+const safeShippingPrice = Number(shippingPrice) || 0;
 
-    // 💸 What Uengage charges YOU
+// 🔥 GST from DB (secure)
+const gstPercentage = deliverySettings.gstPercentage || 0;
+
+const calculatedTaxPrice = Number(
+  ((itemsPrice * gstPercentage) / 100).toFixed(2)
+);
+
+// 💸 What Uengage charges YOU
 const uengageDeliveryFee = safeShippingPrice;
 
 // 💰 What customer pays
 let finalShippingPrice = safeShippingPrice;
 
-    if (
-      deliveryMode === 'delivery' &&
-      deliverySettings.freeDeliveryThreshold > 0 &&
-      itemsPrice >= deliverySettings.freeDeliveryThreshold
-    ) {
-      finalShippingPrice = 0;
-    }
+// Free delivery check
+if (
+  deliveryMode === 'delivery' &&
+  deliverySettings.freeDeliveryThreshold > 0 &&
+  itemsPrice >= deliverySettings.freeDeliveryThreshold
+) {
+  finalShippingPrice = 0;
+}
 
-    const calculatedTotalPrice = Number(
-      (itemsPrice + finalShippingPrice + safeTaxPrice).toFixed(2)
-    );
+// 🔥 FINAL TOTAL
+const calculatedTotalPrice = Number(
+  (itemsPrice + finalShippingPrice + calculatedTaxPrice).toFixed(2)
+);
+
 
     /* ---------------- 3️⃣ CREATE ORDER ---------------- */
 
@@ -334,7 +344,7 @@ let finalShippingPrice = safeShippingPrice;
       orderItems: enrichedOrderItems,
       shippingAddress,
       paymentMethod,
-      taxPrice: safeTaxPrice,
+      taxPrice: calculatedTaxPrice,
       shippingPrice: finalShippingPrice,
       uengageDeliveryFee: uengageDeliveryFee,
       totalPrice: calculatedTotalPrice,
@@ -858,6 +868,7 @@ export const getDeliverySettings = async (req: Request, res: Response) => {
       pricePerKm: settings.pricePerKm,
       baseCharge: settings.baseCharge,
       freeDeliveryThreshold: settings.freeDeliveryThreshold,
+      gstPercentage: settings.gstPercentage,
       storeLocations: settings.storeLocations
     });
 
@@ -1093,32 +1104,29 @@ export const checkAvailability = async (req: AuthenticatedRequest, res: Response
 
 // @desc    Subscribe to newsletter
 // @route   POST /api/user/newsletter/subscribe
-// @access  Public (can be used by non-logged-in users)
+// @access  Private (Logged-in users only)
+
 export const subscribeNewsletter = async (req: Request, res: Response) => {
-  const { email } = req.body;
-
-  if (!email) {
-    return res.status(400).json({ message: 'Email is required' });
-  }
-
   try {
-    // Check if user exists with this email
-    const user = await User.findOne({ email });
+    const user = await User.findById(req.user._id);
 
-    if (user) {
-      // Update existing user's newsletter subscription
-      user.newsletterSubscribed = true;
-      await user.save();
-      res.json({ message: 'Successfully subscribed to newsletter' });
-    } else {
-      // For non-registered users, we could create a newsletter subscriber record
-      // For now, we'll just return success since this is a simple implementation
-      res.json({ message: 'Successfully subscribed to newsletter' });
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
     }
+
+    if (user.newsletterSubscribed) {
+      return res.status(400).json({ message: 'Already subscribed' });
+    }
+
+    user.newsletterSubscribed = true;
+    await user.save();
+
+    res.json({ message: 'Successfully subscribed to newsletter' });
   } catch (error: any) {
     res.status(500).json({ message: error.message });
   }
 };
+
 
 export const getSavedAddress = async (req : Request, res: Response) => {
   try {
