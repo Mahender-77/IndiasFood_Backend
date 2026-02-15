@@ -16,6 +16,7 @@ export interface IDeliverySettings {
   pricePerKm: number;
   baseCharge: number;
   freeDeliveryThreshold: number;
+  gstPercentage: number; 
   storeLocations: IStoreLocation[];
 }
 
@@ -72,6 +73,14 @@ const DeliverySettingsSchema = new mongoose.Schema<DeliverySettingsDocument>({
     default: 10,
     min: 0
   },
+  gstPercentage: {
+    type: Number,
+    required: true,
+    default: 0,
+    min: 0,
+    max: 100
+  },
+  
   baseCharge: {
     type: Number,
     required: true,
