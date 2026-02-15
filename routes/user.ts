@@ -16,6 +16,7 @@ import {
   subscribeNewsletter,
   searchLocation,
   trackOrderStatus,
+  getUserInvoice,
   getSavedAddress,
   addNewAddress,
   UpdateAddress,
@@ -51,6 +52,7 @@ router.route('/orders').get(protect, getUserOrders);
 router.route('/orders/:id').get(protect, getOrderById);
 router.route('/orders/:id/cancel').put(protect, cancelOrder);
 router.route('/orders/:id/track').get(protect, trackOrderStatus);
+router.route('/orders/:id/invoice').get(protect, getUserInvoice);
 
 
 // Store locations

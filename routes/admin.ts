@@ -43,6 +43,7 @@ import {
   exportOrdersByTime,
   exportSalesByTime,
   adminUpdateOrderStatus,
+  getAdminInvoice,
 } from '../controllers/adminController';
 
 const router = express.Router();
@@ -52,6 +53,7 @@ router.route('/orders').get(protect, admin, getAllOrders);
 router.route('/orders/:id/delivery-status').put(protect, admin, adminUpdateOrderStatus);
 router.route('/orders/:id/delivery').put(protect, admin, updateOrderToDelivered);
 router.route('/orders/:id/assign-delivery').put(protect, admin, assignDeliveryPerson);
+router.route('/orders/:id/invoice').get(protect, admin, getAdminInvoice);
 
 // Customer management
 router.route('/customers').get(protect, admin, getCustomers);
