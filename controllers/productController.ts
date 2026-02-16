@@ -9,24 +9,32 @@ export const getProducts = async (req: Request, res: Response) => {
   try {
     const pageSize = 12;
     const page = Number(req.query.pageNumber) || 1;
-    
-    // Search term handling
+
+    /* ---------------- SEARCH FILTER ---------------- */
+
     const searchTerm = (req.query.search || req.query.keyword) as string;
+
     const searchFilter = searchTerm
-      ? { 
+      ? {
           $or: [
-            { name: { $regex: searchTerm, $options: 'i' } },
-            { description: { $regex: searchTerm, $options: 'i' } }
-          ]
+            { name: { $regex: searchTerm, $options: "i" } },
+            { description: { $regex: searchTerm, $options: "i" } },
+          ],
         }
       : {};
 
-    // Category filter (main category)
+    /* ---------------- CATEGORY FILTER ---------------- */
+
     let categoryFilter = {};
-    if (req.query.category && req.query.category !== 'all' && req.query.category !== '') {
-      const category = await Category.findOne({ 
-        name: { $regex: new RegExp(`^${req.query.category}$`, 'i') } 
+    if (
+      req.query.category &&
+      req.query.category !== "all" &&
+      req.query.category !== ""
+    ) {
+      const category = await Category.findOne({
+        name: { $regex: new RegExp(`^${req.query.category}$`, "i") },
       });
+
       if (category) {
         categoryFilter = { category: category._id };
       } else {
@@ -34,52 +42,113 @@ export const getProducts = async (req: Request, res: Response) => {
       }
     }
 
-    // Subcategory filter (NEW)
+    /* ---------------- SUBCATEGORY FILTER ---------------- */
+
     let subcategoryFilter = {};
     if (req.query.subcategories) {
-      // Handle multiple subcategories (comma-separated)
-      const subcategories = (req.query.subcategories as string).split(',').map(s => s.trim());
+      const subcategories = (req.query.subcategories as string)
+        .split(",")
+        .map((s) => s.trim());
+
       if (subcategories.length > 0) {
-        subcategoryFilter = { 
-          subcategory: { $in: subcategories }
+        subcategoryFilter = {
+          subcategory: { $in: subcategories },
         };
       }
     }
 
-    // Sorting logic
+    /* ---------------- FINAL QUERY ---------------- */
+
+    const query = {
+      ...searchFilter,
+      ...categoryFilter,
+      ...subcategoryFilter,
+      isActive: true,
+    };
+
+    const sortBy = req.query.sortBy as string;
+
+    /* =====================================================
+       🔥 PRICE SORTING (VARIANT + NON VARIANT SAFE)
+    ====================================================== */
+
+    if (sortBy === "price-low" || sortBy === "price-high") {
+      const sortDirection = sortBy === "price-low" ? 1 : -1;
+
+      const products = await Product.aggregate([
+        { $match: query },
+
+        {
+          $addFields: {
+            effectivePrice: {
+              $cond: {
+                // If product has variants
+                if: { $gt: [{ $size: { $ifNull: ["$variants", []] } }, 0] },
+                then: {
+                  $min: {
+                    $map: {
+                      input: "$variants",
+                      as: "v",
+                      in: {
+                        $ifNull: ["$$v.offerPrice", "$$v.originalPrice"],
+                      },
+                    },
+                  },
+                },
+                // If product has NO variants
+                else: {
+                  $ifNull: ["$offerPrice", "$originalPrice"],
+                },
+              },
+            },
+          },
+        },
+
+        { $sort: { effectivePrice: sortDirection } },
+
+        { $skip: pageSize * (page - 1) },
+        { $limit: pageSize },
+      ]);
+
+      const count = await Product.countDocuments(query);
+
+      return res.json({
+        products,
+        page,
+        pages: Math.ceil(count / pageSize),
+      });
+    }
+
+    /* =====================================================
+       🔥 NORMAL SORTING (NO PRICE)
+    ====================================================== */
+
     let sort: { [key: string]: 1 | -1 } = { createdAt: -1 };
-    switch (req.query.sortBy) {
-      case 'price-low':
-        sort = { originalPrice: 1 };
-        break;
-      case 'price-high':
-        sort = { originalPrice: -1 };
-        break;
-      case 'name':
+
+    switch (sortBy) {
+      case "name":
         sort = { name: 1 };
         break;
-      case 'featured':
+
+      case "featured":
       default:
         sort = { createdAt: -1 };
         break;
     }
 
-    // Build final query
-    const query = { 
-      ...searchFilter, 
-      ...categoryFilter,
-      ...subcategoryFilter,
-      isActive: true 
-    };
-
     const count = await Product.countDocuments(query);
+
     const products = await Product.find(query)
-      .populate('category', 'name')
+      .populate("category", "name")
       .sort(sort)
       .limit(pageSize)
       .skip(pageSize * (page - 1));
 
-    res.json({ products, page, pages: Math.ceil(count / pageSize) });
+    res.json({
+      products,
+      page,
+      pages: Math.ceil(count / pageSize),
+    });
   } catch (error: any) {
     res.status(500).json({ message: error.message });
   }
