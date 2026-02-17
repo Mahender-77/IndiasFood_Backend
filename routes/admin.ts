@@ -34,6 +34,7 @@ import {
   updateInventoryProduct,
   updateStock,
   toggleFlag,
+  toggleMostSaled,
   // getAllInventoryProducts,
   deactivateProduct,
   getAllProducts,
@@ -44,6 +45,7 @@ import {
   exportSalesByTime,
   adminUpdateOrderStatus,
   getAdminInvoice,
+  
 } from '../controllers/adminController';
 
 const router = express.Router();
@@ -98,6 +100,7 @@ router.route('/inventory/products/:id').put(protect, admin, updateInventoryProdu
 router.route('/inventory').get(protect, admin, getAllProducts);
 router.route('/inventory/:id/stock').put(protect, admin, updateStock);
 router.route('/inventory/:id/flag').put(protect, admin, toggleFlag);
+router.route('/inventory/:id/most-saled').put(protect, admin, toggleMostSaled);
 router.route('/inventory/:location').get(protect, admin, getInventory);
 
 

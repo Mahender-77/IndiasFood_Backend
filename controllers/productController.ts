@@ -396,3 +396,65 @@ export const getNewArrivalProducts = async (req: Request, res: Response) => {
     res.status(500).json({ message: error.message });
   }
 };
+
+// @desc    Fetch Most Sold products
+// @route   GET /api/products/most-saled
+// @access  Public
+export const getMostSoldProducts = async (req: Request, res: Response) => {
+  try {
+    const pageSize = 12;
+    const page = Number(req.query.pageNumber) || 1;
+    
+    const searchTerm = (req.query.search || req.query.keyword) as string;
+    const searchFilter = searchTerm
+      ? { 
+          $or: [
+            { name: { $regex: searchTerm, $options: 'i' } },
+            { description: { $regex: searchTerm, $options: 'i' } }
+          ]
+        }
+      : {};
+
+    // Subcategory filter
+    let subcategoryFilter = {};
+    if (req.query.subcategories) {
+      const subcategories = (req.query.subcategories as string).split(',').map(s => s.trim());
+      if (subcategories.length > 0) {
+        subcategoryFilter = { subcategory: { $in: subcategories } };
+      }
+    }
+
+    let sort: { [key: string]: 1 | -1 } = { createdAt: -1 };
+    switch (req.query.sortBy) {
+      case 'price-low':
+        sort = { originalPrice: 1 };
+        break;
+      case 'price-high':
+        sort = { originalPrice: -1 };
+        break;
+      case 'name':
+        sort = { name: 1 };
+        break;
+      default:
+        sort = { createdAt: -1 };
+    }
+
+    const query = { 
+      ...searchFilter,
+      ...subcategoryFilter,
+      isMostSaled: true,
+      isActive: true 
+    };
+
+    const count = await Product.countDocuments(query);
+    const products = await Product.find(query)
+      .populate('category', 'name')
+      .sort(sort)
+      .limit(pageSize)
+      .skip(pageSize * (page - 1));
+
+    res.json({ products, page, pages: Math.ceil(count / pageSize) });
+  } catch (error: any) {
+    res.status(500).json({ message: error.message });
+  }
+};

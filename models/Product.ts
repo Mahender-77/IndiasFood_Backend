@@ -37,6 +37,7 @@ export interface IProduct {
 
   isGITagged?: boolean;
   isNewArrival?: boolean;
+  isMostSaled?: boolean; // Add this line
 
   inventory?: IProductInventory[];
 
@@ -145,6 +146,11 @@ const ProductSchema = new mongoose.Schema<IProduct & Document>(
     },
 
     isNewArrival: {
+      type: Boolean,
+      default: false
+    },
+
+    isMostSaled: { // Add this block
       type: Boolean,
       default: false
     },
