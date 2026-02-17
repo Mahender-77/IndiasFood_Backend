@@ -8,6 +8,7 @@ import {
   getAllSubcategories,
   getGITaggedProducts,
   getNewArrivalProducts,
+  getMostSoldProducts, // Added
 } from '../controllers/productController';
 
 const router = express.Router();
@@ -20,6 +21,7 @@ router.get('/subcategories/:categoryName', getSubcategoriesByCategory);
 router.get('/category/sweets', getSweetsProducts);
 router.get('/gi-tagged', getGITaggedProducts);
 router.get('/new-arrivals', getNewArrivalProducts);
+router.get('/most-saled', getMostSoldProducts); // Added
 router.get('/:id', getProductById);
 
 export default router;

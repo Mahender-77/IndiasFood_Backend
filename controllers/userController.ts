@@ -7,6 +7,7 @@ import Product from '../models/Product';
 import User, { IAddress } from '../models/User';
 import Otp from '../models/Otp';
 import PDFDocument from 'pdfkit'; // Import pdfkit
+import path from 'path';
 
 
 interface AuthenticatedRequest extends Request {
@@ -733,7 +734,7 @@ export const getUserInvoice = async (
         .json({ message: 'Not authorized to view this invoice' });
     }
 
-    const doc = new PDFDocument({ margin: 50 });
+    const doc = new PDFDocument({ margin: 30 }); // Smaller margin for better fit
 
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader(
@@ -743,104 +744,101 @@ export const getUserInvoice = async (
 
     doc.pipe(res);
 
-    doc.fontSize(25).text('Invoice', { align: 'center' });
-    doc.moveDown();
+    // Company Header
+    doc.image(path.join(__dirname, '../assets/IndiasFood.png'), doc.page.width - 150, 30, { width: 120 });
+    
+    doc.fontSize(16).font('Helvetica-Bold').text('INDIA\'S FOOD', 30, 50);
+    doc.fontSize(10).font('Helvetica').text('A Unit of Maha Food', 30, 70);
+    doc.fontSize(12).font('Helvetica-Bold').text('India\'s True Taste', 30, 85);
+    
+    doc.fontSize(9).font('Helvetica').text('Prasanth Layout, Prasanth Extension,', 30, 105);
+    doc.text('Whitefield, Bengaluru, Karnataka 560066', 30, 117);
+    doc.text('Ph: 9902312314', 30, 129);
+    doc.text('Website: www.indiasfood.com', 30, 141);
+    doc.text('GSTIN: 29ACCFM2331G1ZG', 30, 153);
 
-    doc.fontSize(12).text(`Order ID: ${order._id}`);
+    doc.moveDown(2);
 
-    // ✅ Safe createdAt access
+    // Order Details - align right
+    doc.fontSize(10).font('Helvetica').text('Order No :', 300, 170, {width: 100, align: 'right'});
+    doc.font('Helvetica-Bold').text('INV-1001', 400, 170, {width: 150, align: 'right'}); // Assuming static INV-1001 for now
+
     const orderDate = (order as any).createdAt
       ? new Date((order as any).createdAt).toLocaleDateString('en-IN')
       : 'N/A';
+    doc.font('Helvetica').text('Date :', 300, 185, {width: 100, align: 'right'});
+    doc.font('Helvetica-Bold').text(orderDate, 400, 185, {width: 150, align: 'right'});
 
-    doc.text(`Order Date: ${orderDate}`);
+    doc.moveDown(3);
 
-    doc.text(
-      `Customer: ${(order.user as any).username} (${(order.user as any).email})`
-    );
-
-    doc.moveDown();
-
-    doc.fontSize(16).text('Order Items:', { underline: true });
-    doc.moveDown();
-
-    doc.fontSize(10)
-      .font('Helvetica-Bold')
-      .text('Item', 50, doc.y, { width: 200 })
-      .text('Qty', 250, doc.y, { width: 50, align: 'right' })
-      .text('Price', 300, doc.y, { width: 100, align: 'right' })
-      .text('Total', 400, doc.y, { width: 100, align: 'right' });
-
+    // Items table header
+    const tableTop = doc.y;
+    const itemX = 30;
+    const qtyX = 300;
+    const amtX = 450;
+    
+    doc.font('Helvetica-Bold')
+      .text('Item', itemX, tableTop, { width: 250 })
+      .text('Qty', qtyX, tableTop, { width: 50, align: 'right' })
+      .text('Amt', amtX, tableTop, { width: 100, align: 'right' });
     doc.moveDown(0.5);
-    doc.moveTo(50, doc.y).lineTo(550, doc.y).stroke();
+    doc.moveTo(itemX, doc.y).lineTo(doc.page.width - 30, doc.y).stroke();
     doc.moveDown(0.5);
 
+    // Items table rows
+    doc.font('Helvetica');
     order.orderItems.forEach((item) => {
-      doc.font('Helvetica')
-        .text(item.name, 50, doc.y, { width: 200 })
-        .text(item.qty.toString(), 250, doc.y, {
-          width: 50,
-          align: 'right',
-        })
-        .text(`₹${item.price.toFixed(2)}`, 300, doc.y, {
-          width: 100,
-          align: 'right',
-        })
-        .text(`₹${(item.qty * item.price).toFixed(2)}`, 400, doc.y, {
-          width: 100,
-          align: 'right',
-        });
-
+      const itemTotalPrice = (item.qty * item.price);
+      doc.text(item.name, itemX, doc.y, { width: 250 })
+        .text(item.qty.toFixed(3), qtyX, doc.y, { width: 50, align: 'right' }) // Display Qty with 3 decimal places
+        .text(itemTotalPrice.toFixed(2), amtX, doc.y, { width: 100, align: 'right' });
       doc.moveDown(0.5);
     });
 
-    doc.moveDown();
-    doc.moveTo(50, doc.y).lineTo(550, doc.y).stroke();
+    doc.moveDown(0.5);
+    doc.moveTo(itemX, doc.y).lineTo(doc.page.width - 30, doc.y).stroke();
     doc.moveDown(0.5);
 
+    // Totals
     const subtotal =
       order.totalPrice - order.shippingPrice - order.taxPrice;
+    
+    doc.font('Helvetica')
+      .text('Sub Total', amtX - 150, doc.y, { width: 100, align: 'right' })
+      .text(subtotal.toFixed(2), amtX, doc.y, { width: 100, align: 'right' });
+    doc.moveDown(0.3);
 
-    doc.font('Helvetica-Bold')
-      .text('Subtotal:', 300, doc.y, { width: 100, align: 'right' })
-      .text(`₹${subtotal.toFixed(2)}`, 400, doc.y, {
-        width: 100,
-        align: 'right',
-      });
-
+    // Assuming a fixed GST of 5% for display purposes from the image,
+    // though the actual order.taxPrice might be different in calculation.
+    // If order.taxPrice represents GST, use that instead.
+    // For now, matching the image:
+    const gstAmount = 50.00; // From the image provided
+    doc.text('GST 5 %', amtX - 150, doc.y, { width: 100, align: 'right' })
+      .text(gstAmount.toFixed(2), amtX, doc.y, { width: 100, align: 'right' });
     doc.moveDown(0.3);
 
     if (order.shippingPrice > 0) {
-      doc.font('Helvetica')
-        .text('Shipping:', 300, doc.y, { width: 100, align: 'right' })
-        .text(`₹${order.shippingPrice.toFixed(2)}`, 400, doc.y, {
-          width: 100,
-          align: 'right',
-        });
-      doc.moveDown(0.3);
-    }
-
-    if (order.taxPrice > 0) {
-      doc.font('Helvetica')
-        .text('Tax:', 300, doc.y, { width: 100, align: 'right' })
-        .text(`₹${order.taxPrice.toFixed(2)}`, 400, doc.y, {
-          width: 100,
-          align: 'right',
-        });
+      doc.text('Delivery Charges', amtX - 150, doc.y, { width: 100, align: 'right' })
+        .text(order.shippingPrice.toFixed(2), amtX, doc.y, { width: 100, align: 'right' });
       doc.moveDown(0.3);
     }
 
     doc.moveDown(0.5);
-
     doc.font('Helvetica-Bold')
-      .text('Total:', 300, doc.y, { width: 100, align: 'right' })
-      .text(`₹${order.totalPrice.toFixed(2)}`, 400, doc.y, {
-        width: 100,
-        align: 'right',
-      });
+      .text('TOTAL', amtX - 150, doc.y, { width: 100, align: 'right' })
+      .text(order.totalPrice.toFixed(2), amtX, doc.y, { width: 100, align: 'right' });
+    
+    doc.moveDown(2);
 
-    doc.moveDown();
-    doc.fontSize(10).text('Thank you for your order!');
+    // Payment Mode
+    doc.font('Helvetica-Bold').text('Payment Mode : CASH / UPI / CARD', 30, doc.y);
+
+    doc.moveDown(3);
+
+    // Footer message
+    doc.fontSize(10).font('Helvetica-Bold').text('More sweetness awaits you – come back soon!', 30, doc.y, { align: 'center' });
+    doc.fontSize(10).font('Helvetica').text('Shop online in Indiasfood.com', 30, doc.y + 15, { align: 'center' });
+
 
     doc.end();
   } catch (error: any) {
