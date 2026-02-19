@@ -136,7 +136,7 @@ export const createProduct = async (
       offerPrice:
         safeVariants.length === 0 ? offerPrice : undefined,
       variants: safeVariants,
-      shelfLife: shelfLife?.trim() || '',
+      shelfLife: shelfLife !== undefined && shelfLife !== null ? Number(shelfLife) : undefined,
       category,
       inventory: safeInventory,
       videoUrl: videoUrl?.trim() || '',
@@ -372,7 +372,7 @@ export const updateProduct = async (req: AuthenticatedRequest, res: Response) =>
     product.description = description !== undefined ? description : product.description;
     product.originalPrice = originalPrice !== undefined ? originalPrice : product.originalPrice;
     product.offerPrice = offerPrice !== undefined ? offerPrice : product.offerPrice;
-    product.shelfLife = shelfLife !== undefined ? shelfLife : product.shelfLife;
+    product.shelfLife = shelfLife !== undefined && shelfLife !== null ? Number(shelfLife) : product.shelfLife;
     product.category = category || product.category;
     product.videoUrl = videoUrl !== undefined ? videoUrl : product.videoUrl;
     product.images = images !== undefined ? images : product.images;

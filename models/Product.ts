@@ -25,7 +25,7 @@ export interface IProduct {
   description?: string;
   images: string[];
   videoUrl?: string;
-  shelfLife?: string;
+  shelfLife?: number;
 
   /** 🔥 STORE OWNERSHIP */
   store: mongoose.Types.ObjectId;
@@ -82,9 +82,8 @@ const ProductSchema = new mongoose.Schema<IProduct & Document>(
     },
 
     shelfLife: {
-      type: String,
-      trim: true,
-      maxlength: 50
+      type: Number,
+      min: 0
     },
 
     /* ---------- 🔥 STORE (VERY IMPORTANT) ---------- */
