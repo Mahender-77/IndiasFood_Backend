@@ -12,12 +12,26 @@ const app = express();
 
 app.use(express.json());
 
+app.use((req: Request, res: Response, next: NextFunction) => {
+  const baseUrl1 = process.env.BASE_URL1;
+  const baseUrl = process.env.BASE_URL;
+
+  if (baseUrl1 && req.headers.origin === baseUrl1) {
+    if (baseUrl) {
+      console.log(`Redirecting request from ${baseUrl1} to ${baseUrl}`);
+      res.redirect(302, baseUrl);
+      return;
+    } else {
+      console.warn('BASE_URL is not defined, cannot perform redirect from BASE_URL1.');
+    }
+  }
+  next();
+});
 
 app.use(
   cors({
     origin: [
       process.env.BASE_URL,
-      process.env.BASE_URL1,
       `http://localhost:5173`
     ].filter(Boolean),
     credentials: true,
