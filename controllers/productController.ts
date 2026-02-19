@@ -458,3 +458,85 @@ export const getMostSoldProducts = async (req: Request, res: Response) => {
     res.status(500).json({ message: error.message });
   }
 };
+
+// @desc    Fetch Deal of the Day products (expiring in 2 days or less)
+// @route   GET /api/products/deal-of-the-day
+// @access  Public
+export const getDealOfTheDayProducts = async (req: Request, res: Response) => {
+  try {
+    const pageSize = Number(req.query.pageSize) || 10;
+    const page = Number(req.query.pageNumber) || 1;
+
+    // Get current date
+    const currentDate = new Date();
+
+    // Fetch all active products with shelfLife defined
+    const allProducts = await Product.find({
+      isActive: true,
+      shelfLife: { $exists: true, $ne: null, $gt: 0 }
+    })
+      .populate('category', 'name')
+      .lean();
+
+    // Filter products that are expiring in 2 days or less
+    const expiringProducts = allProducts.filter((product: any) => {
+      if (!product.shelfLife || !product.createdAt) return false;
+
+      // Calculate days since product creation
+      const createdAt = new Date(product.createdAt);
+      const daysSinceCreation = Math.floor(
+        (currentDate.getTime() - createdAt.getTime()) / (1000 * 60 * 60 * 24)
+      );
+
+      // Calculate remaining shelf life days
+      const remainingDays = product.shelfLife - daysSinceCreation;
+
+      // Include products that have 0-2 days remaining (not expired)
+      return remainingDays <= 2 && remainingDays >= 0;
+    });
+
+    // Apply sorting
+    const sortBy = req.query.sortBy as string;
+    
+    if (sortBy === 'price-low' || sortBy === 'price-high') {
+      expiringProducts.sort((a: any, b: any) => {
+        const aPrice = a.offerPrice || a.originalPrice || 0;
+        const bPrice = b.offerPrice || b.originalPrice || 0;
+        return sortBy === 'price-low' ? aPrice - bPrice : bPrice - aPrice;
+      });
+    } else if (sortBy === 'name') {
+      expiringProducts.sort((a: any, b: any) => {
+        return a.name.localeCompare(b.name);
+      });
+    } else {
+      // Default: Sort by remaining days (most urgent first)
+      expiringProducts.sort((a: any, b: any) => {
+        const aCreatedAt = new Date(a.createdAt);
+        const bCreatedAt = new Date(b.createdAt);
+        const aDaysSince = Math.floor(
+          (currentDate.getTime() - aCreatedAt.getTime()) / (1000 * 60 * 60 * 24)
+        );
+        const bDaysSince = Math.floor(
+          (currentDate.getTime() - bCreatedAt.getTime()) / (1000 * 60 * 60 * 24)
+        );
+        const aRemaining = a.shelfLife - aDaysSince;
+        const bRemaining = b.shelfLife - bDaysSince;
+        return aRemaining - bRemaining; // Sort ascending (0 days first)
+      });
+    }
+
+    // Apply pagination
+    const startIndex = (page - 1) * pageSize;
+    const endIndex = startIndex + pageSize;
+    const paginatedProducts = expiringProducts.slice(startIndex, endIndex);
+
+    res.json({
+      products: paginatedProducts,
+      page,
+      pages: Math.ceil(expiringProducts.length / pageSize),
+      total: expiringProducts.length
+    });
+  } catch (error: any) {
+    res.status(500).json({ message: error.message });
+  }
+};

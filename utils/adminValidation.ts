@@ -11,7 +11,7 @@ export const createProductSchema = Joi.object({
     originalPrice: Joi.number().min(0).required(),
     offerPrice: Joi.number().min(0).optional(),
   })).optional(),
-  shelfLife: Joi.string().optional(),
+  shelfLife: Joi.number().min(0).optional(),
   category: Joi.string().pattern(/^[0-9a-fA-F]{24}$/).required(),
   inventory: Joi.array().items(Joi.object({
     location: Joi.string().valid('hyderabad', 'vizag', 'vijayawada', 'bangalore').required(),
@@ -39,7 +39,7 @@ export const updateProductSchema = Joi.object({
     originalPrice: Joi.number().min(0).required(),
     offerPrice: Joi.number().min(0).optional(),
   })).optional(),
-  shelfLife: Joi.string().optional(),
+  shelfLife: Joi.number().min(0).optional(),
   category: Joi.string().pattern(/^[0-9a-fA-F]{24}$/).optional(),
   inventory: Joi.array().items(Joi.object({
     location: Joi.string().valid('hyderabad', 'vizag', 'vijayawada', 'bangalore').required(),
