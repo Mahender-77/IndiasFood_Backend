@@ -27,6 +27,8 @@ export interface IProduct {
   videoUrl?: string;
   shelfLife?: number;
 
+  originLocation?: string; // e.g., Hyderabad, Kakinada
+
   /** 🔥 STORE OWNERSHIP */
   store: mongoose.Types.ObjectId;
 
@@ -84,6 +86,13 @@ const ProductSchema = new mongoose.Schema<IProduct & Document>(
     shelfLife: {
       type: Number,
       min: 0
+    },
+
+    originLocation: {
+      type: String,
+      trim: true,
+      maxlength: 100,
+      index: true // allows filtering by origin
     },
 
     /* ---------- 🔥 STORE (VERY IMPORTANT) ---------- */

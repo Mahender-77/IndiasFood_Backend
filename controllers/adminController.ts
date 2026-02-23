@@ -65,7 +65,8 @@ export const createProduct = async (
     isActive,
     isGITagged,
     isNewArrival,
-    store
+    store,
+    originLocation 
   } = req.body;
 
   try {
@@ -131,6 +132,7 @@ export const createProduct = async (
       name: name.trim(),
       description: description?.trim() || '',
       store,
+      originLocation: originLocation?.trim().toLowerCase() || undefined,
       originalPrice:
         safeVariants.length === 0 ? originalPrice : undefined,
       offerPrice:
