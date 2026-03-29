@@ -14,5 +14,7 @@ router.get('/subcategories/:categoryName', productController_1.getSubcategoriesB
 router.get('/category/sweets', productController_1.getSweetsProducts);
 router.get('/gi-tagged', productController_1.getGITaggedProducts);
 router.get('/new-arrivals', productController_1.getNewArrivalProducts);
+router.get('/most-saled', productController_1.getMostSoldProducts);
+router.get('/deal-of-the-day', productController_1.getDealOfTheDayProducts);
 router.get('/:id', productController_1.getProductById);
 exports.default = router;

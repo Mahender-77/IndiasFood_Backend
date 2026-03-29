@@ -2,6 +2,12 @@ import mongoose, { Document } from 'mongoose';
 
 /* ---------------- ORDER ITEM ---------------- */
 
+/** Which batch(es) fulfilled this line item (FIFO tracking for admin). */
+export interface IBatchAllocation {
+  batchNumber: string;
+  quantity: number;
+}
+
 export interface IOrderItem {
   name: string;
   qty: number;
@@ -9,6 +15,8 @@ export interface IOrderItem {
   price: number;
   product: mongoose.Schema.Types.ObjectId;
   selectedVariantIndex?: number;
+  /** Fulfilment from batches (set at order creation for admin visibility). */
+  batchAllocations?: IBatchAllocation[];
 }
 
 /* ---------------- SHIPPING ADDRESS ---------------- */
@@ -29,6 +37,9 @@ export interface IShippingAddress {
 export interface IOrder {
   user: mongoose.Schema.Types.ObjectId;
   orderItems: IOrderItem[];
+  giveAwayItems?: IOrderItem[];
+  /** Which giveaway was applied (if any) */
+  giveAwayId?: mongoose.Schema.Types.ObjectId;
   shippingAddress: IShippingAddress;
   paymentMethod: string;
 
@@ -46,6 +57,10 @@ export interface IOrder {
 
   distance?: number;
   nearestStore?: string;
+
+  /** Store where order is fulfilled (for inventory deduction/restore). Set at createOrder. */
+  store?: mongoose.Schema.Types.ObjectId;
+  storeName?: string;
 
   /* ✅ U-ENGAGE METADATA */
   uengage?: {
@@ -95,6 +110,38 @@ const OrderSchema = new mongoose.Schema<OrderDocument>(
           ref: 'Product',
         },
         selectedVariantIndex: { type: Number, default: 0 },
+        batchAllocations: [
+          {
+            batchNumber: { type: String, default: '' },
+            quantity: { type: Number, default: 0 },
+          },
+        ],
+      },
+    ],
+
+    giveAwayId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'GiveAway',
+      default: undefined
+    },
+    giveAwayItems: [
+      {
+        name: { type: String, required: true },
+        qty: { type: Number, required: true },
+        image: { type: String, required: true },
+        price: { type: Number, required: true, default: 0 },
+        product: {
+          type: mongoose.Schema.Types.ObjectId,
+          required: true,
+          ref: 'Product',
+        },
+        selectedVariantIndex: { type: Number, default: 0 },
+        batchAllocations: [
+          {
+            batchNumber: { type: String, default: '' },
+            quantity: { type: Number, default: 0 },
+          },
+        ],
       },
     ],
 
@@ -146,6 +193,16 @@ const OrderSchema = new mongoose.Schema<OrderDocument>(
     },
 
     nearestStore: {
+      type: String,
+      default: '',
+    },
+
+    store: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Store',
+      default: null,
+    },
+    storeName: {
       type: String,
       default: '',
     },

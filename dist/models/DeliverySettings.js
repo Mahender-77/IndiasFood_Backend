@@ -54,6 +54,13 @@ const DeliverySettingsSchema = new mongoose_1.default.Schema({
         default: 10,
         min: 0
     },
+    gstPercentage: {
+        type: Number,
+        required: true,
+        default: 0,
+        min: 0,
+        max: 100
+    },
     baseCharge: {
         type: Number,
         required: true,

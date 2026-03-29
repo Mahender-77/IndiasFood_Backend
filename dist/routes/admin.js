@@ -9,10 +9,14 @@ const multer_1 = __importDefault(require("../middleware/multer")); // Import Mul
 const adminController_1 = require("../controllers/adminController");
 const router = express_1.default.Router();
 // Order management
+router.post('/orders/giveaway-eligibility-batch', auth_1.protect, auth_1.admin, adminController_1.getOrdersGiveAwayEligibilityBatch);
 router.route('/orders').get(auth_1.protect, auth_1.admin, adminController_1.getAllOrders);
-router.route('/orders/:id/status').put(auth_1.protect, auth_1.admin, adminController_1.updateOrderStatus);
+router.route('/orders/:id/delivery-status').put(auth_1.protect, auth_1.admin, adminController_1.adminUpdateOrderStatus);
 router.route('/orders/:id/delivery').put(auth_1.protect, auth_1.admin, adminController_1.updateOrderToDelivered);
 router.route('/orders/:id/assign-delivery').put(auth_1.protect, auth_1.admin, adminController_1.assignDeliveryPerson);
+router.route('/orders/:id/invoice').get(auth_1.protect, auth_1.admin, adminController_1.getAdminInvoice);
+router.route('/orders/:id/giveaway-eligibility').get(auth_1.protect, auth_1.admin, adminController_1.getOrderGiveAwayEligibility);
+router.route('/orders/:id/apply-giveaway').post(auth_1.protect, auth_1.admin, adminController_1.applyGiveAwayToOrder);
 // Customer management
 router.route('/customers').get(auth_1.protect, auth_1.admin, adminController_1.getCustomers);
 router.route('/customers/:id').get(auth_1.protect, auth_1.admin, adminController_1.getCustomerById);
@@ -24,6 +28,13 @@ router.route('/delivery-persons').get(auth_1.protect, auth_1.admin, adminControl
 // Delivery Settings
 router.route('/delivery-settings').get(auth_1.protect, auth_1.admin, adminController_1.getDeliverySettings).put(auth_1.protect, auth_1.admin, adminController_1.updateDeliverySettings);
 router.route('/delivery-locations').get(auth_1.protect, auth_1.admin, adminController_1.getDeliveryLocations);
+// GiveAway management (explicit handlers — reliable with Express 5)
+router.get('/giveaways', auth_1.protect, auth_1.admin, adminController_1.getGiveAways);
+router.post('/giveaways', auth_1.protect, auth_1.admin, adminController_1.createGiveAway);
+// More specific path before `/giveaways/:id`
+router.get('/giveaways/:id/eligible-users', auth_1.protect, auth_1.admin, adminController_1.getGiveAwayEligibleUsers);
+router.put('/giveaways/:id', auth_1.protect, auth_1.admin, adminController_1.updateGiveAway);
+router.delete('/giveaways/:id', auth_1.protect, auth_1.admin, adminController_1.deleteGiveAway);
 // Product management
 router.route('/products').post(auth_1.protect, auth_1.admin, adminController_1.createProduct);
 router.route('/products/:id').put(auth_1.protect, auth_1.admin, adminController_1.updateProduct); // New route for updating a product
@@ -47,6 +58,8 @@ router.route('/inventory/create-product').post(auth_1.protect, auth_1.admin, adm
 router.route('/inventory/products/:id').put(auth_1.protect, auth_1.admin, adminController_1.updateInventoryProduct).delete(auth_1.protect, auth_1.admin, adminController_1.deactivateProduct);
 router.route('/inventory').get(auth_1.protect, auth_1.admin, adminController_1.getAllProducts);
 router.route('/inventory/:id/stock').put(auth_1.protect, auth_1.admin, adminController_1.updateStock);
+router.route('/inventory/:id/batches').put(auth_1.protect, auth_1.admin, adminController_1.addBatches);
 router.route('/inventory/:id/flag').put(auth_1.protect, auth_1.admin, adminController_1.toggleFlag);
+router.route('/inventory/:id/most-saled').put(auth_1.protect, auth_1.admin, adminController_1.toggleMostSaled);
 router.route('/inventory/:location').get(auth_1.protect, auth_1.admin, adminController_1.getInventory);
 exports.default = router;

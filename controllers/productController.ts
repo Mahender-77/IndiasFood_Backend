@@ -2,11 +2,78 @@ import { Request, Response } from 'express';
 import Category from '../models/Category';
 import Product from '../models/Product';
 
+const NEW_ARRIVAL_DAYS = 4;
+
+const expireOldNewArrivalFlags = async () => {
+  const cutoffDate = new Date(Date.now() - NEW_ARRIVAL_DAYS * 24 * 60 * 60 * 1000);
+  await Product.updateMany(
+    {
+      isNewArrival: true,
+      createdAt: { $lt: cutoffDate }
+    },
+    {
+      $set: { isNewArrival: false }
+    }
+  );
+};
+
 // @desc    Fetch all products with advanced filtering
 // @route   GET /api/products
 // @access  Public
 export const getProducts = async (req: Request, res: Response) => {
   try {
+    const isVariantInDeal = (product: any, variantIndex: number) => {
+      const currentDate = new Date();
+      currentDate.setHours(0, 0, 0, 0);
+
+      const inventory = product.inventory || [];
+
+      for (const loc of inventory) {
+        for (const batch of loc.batches || []) {
+          if (batch.variantIndex !== variantIndex) continue;
+
+          const triggerDays = batch.dealTriggerDays ?? product.dealTriggerDays ?? 0;
+          const discount = batch.dealDiscountPercent ?? product.dealDiscountPercent ?? 0;
+
+          if (triggerDays <= 0 || discount <= 0) continue;
+
+          const expiry = new Date(batch.expiryDate);
+          expiry.setHours(0, 0, 0, 0);
+
+          const dealStart = new Date(expiry);
+          dealStart.setDate(dealStart.getDate() - triggerDays);
+
+          if (
+            currentDate >= dealStart &&
+            currentDate <= expiry &&
+            (batch.quantity || 0) > 0
+          ) {
+            return true;
+          }
+        }
+      }
+
+      return false;
+    };
+
+    const filterDealVariantsFromListing = (rawProducts: any[]) =>
+      rawProducts
+        .map((product: any) => {
+          if (!product.variants || product.variants.length === 0) return product;
+
+          const filteredVariants = product.variants.filter((_: any, index: number) => {
+            return !isVariantInDeal(product, index);
+          });
+
+          return {
+            ...product,
+            variants: filteredVariants
+          };
+        })
+        .filter((product: any) => {
+          return !product.variants || product.variants.length > 0;
+        });
+
     const pageSize = 12;
     const page = Number(req.query.pageNumber) || 1;
 
@@ -75,7 +142,7 @@ export const getProducts = async (req: Request, res: Response) => {
     if (sortBy === "price-low" || sortBy === "price-high") {
       const sortDirection = sortBy === "price-low" ? 1 : -1;
 
-      const products = await Product.aggregate([
+      const rawProducts = await Product.aggregate([
         { $match: query },
 
         {
@@ -105,12 +172,13 @@ export const getProducts = async (req: Request, res: Response) => {
         },
 
         { $sort: { effectivePrice: sortDirection } },
-
         { $skip: pageSize * (page - 1) },
         { $limit: pageSize },
       ]);
 
       const count = await Product.countDocuments(query);
+
+      const products = filterDealVariantsFromListing(rawProducts);
 
       return res.json({
         products,
@@ -138,11 +206,14 @@ export const getProducts = async (req: Request, res: Response) => {
 
     const count = await Product.countDocuments(query);
 
-    const products = await Product.find(query)
+    const rawProducts = await Product.find(query)
       .populate("category", "name")
       .sort(sort)
       .limit(pageSize)
-      .skip(pageSize * (page - 1));
+      .skip(pageSize * (page - 1))
+      .lean();
+
+    const products = filterDealVariantsFromListing(rawProducts);
 
     res.json({
       products,
@@ -340,6 +411,8 @@ export const getGITaggedProducts = async (req: Request, res: Response) => {
 // @access  Public
 export const getNewArrivalProducts = async (req: Request, res: Response) => {
   try {
+    await expireOldNewArrivalFlags();
+
     const pageSize = 12;
     const page = Number(req.query.pageNumber) || 1;
     
@@ -459,76 +532,142 @@ export const getMostSoldProducts = async (req: Request, res: Response) => {
   }
 };
 
-// @desc    Fetch Deal of the Day products (expiring in 2 days or less)
+// @desc    Fetch Deal of the Day products (per-batch deal logic, FIFO-friendly)
+// Each batch has its own dealTriggerDays & dealDiscountPercent (see Product.batches).
+// When a batch is within its trigger days of expiry and not yet expired, that variant
+// qualifies; we keep the best (max) discount per variant. Full `variants` are preserved;
+// `dealVariants` lists only variants in the deal window (with dealPrice / dealDiscountPercent).
+// Fallback: product-level dealTriggerDays/dealDiscountPercent when batch has none.
 // @route   GET /api/products/deal-of-the-day
 // @access  Public
 export const getDealOfTheDayProducts = async (req: Request, res: Response) => {
   try {
     const pageSize = Number(req.query.pageSize) || 10;
     const page = Number(req.query.pageNumber) || 1;
-
-    // Get current date
     const currentDate = new Date();
+    currentDate.setHours(0, 0, 0, 0);
 
-    // Fetch all active products with shelfLife defined
-    const allProducts = await Product.find({
-      isActive: true,
-      shelfLife: { $exists: true, $ne: null, $gt: 0 }
-    })
+    const allProducts = await Product.find({ isActive: true })
       .populate('category', 'name')
       .lean();
 
-    // Filter products that are expiring in 2 days or less
-    const expiringProducts = allProducts.filter((product: any) => {
-      if (!product.shelfLife || !product.createdAt) return false;
+    const expiringProducts: any[] = [];
 
-      // Calculate days since product creation
-      const createdAt = new Date(product.createdAt);
-      const daysSinceCreation = Math.floor(
-        (currentDate.getTime() - createdAt.getTime()) / (1000 * 60 * 60 * 24)
-      );
+    for (const product of allProducts) {
+      const productTriggerDays = (product as any).dealTriggerDays ?? 0;
+      const productDiscountPercent = (product as any).dealDiscountPercent ?? 0;
 
-      // Calculate remaining shelf life days
-      const remainingDays = product.shelfLife - daysSinceCreation;
+      const dealVariantsMap = new Map<number, { discount: number; expiry: Date }>();
 
-      // Include products that have 0-2 days remaining (not expired)
-      return remainingDays <= 2 && remainingDays >= 0;
-    });
+      const inventory = (product as any).inventory || [];
+      for (const loc of inventory) {
+        for (const batch of loc.batches || []) {
+          const triggerDays = (batch as any).dealTriggerDays ?? productTriggerDays;
+          const batchDiscount = (batch as any).dealDiscountPercent ?? productDiscountPercent;
 
-    // Apply sorting
+          if (triggerDays <= 0 || batchDiscount <= 0) continue;
+
+          const batchExpiry = new Date(batch.expiryDate);
+          batchExpiry.setHours(0, 0, 0, 0);
+
+          const dealStartDate = new Date(batchExpiry);
+          dealStartDate.setDate(dealStartDate.getDate() - triggerDays);
+
+          if (
+            currentDate >= dealStartDate &&
+            currentDate <= batchExpiry &&
+            (batch.quantity || 0) > 0
+          ) {
+            const variantIndex = (batch as any).variantIndex ?? 0;
+
+            const existing = dealVariantsMap.get(variantIndex);
+
+            if (!existing || batchDiscount > existing.discount) {
+              dealVariantsMap.set(variantIndex, {
+                discount: batchDiscount,
+                expiry: batchExpiry
+              });
+            }
+          }
+        }
+      }
+
+      if (dealVariantsMap.size > 0) {
+        const filteredVariants: any[] = [];
+
+        for (const [variantIndex, data] of dealVariantsMap.entries()) {
+          const variant = (product as any).variants?.[variantIndex];
+          if (!variant) continue;
+
+          const basePrice = variant.originalPrice ?? 0;
+          const dealPrice = Math.round(basePrice * (1 - data.discount / 100) * 100) / 100;
+
+          filteredVariants.push({
+            ...variant,
+            variantIndex,
+            dealPrice,
+            dealDiscountPercent: data.discount
+          });
+        }
+
+        if (filteredVariants.length === 0) continue;
+
+        let nearestExpiryDays = Infinity;
+        for (const [, data] of dealVariantsMap) {
+          const daysToExpiry = Math.ceil(
+            (data.expiry.getTime() - currentDate.getTime()) / (1000 * 60 * 60 * 24)
+          );
+          if (daysToExpiry < nearestExpiryDays) nearestExpiryDays = daysToExpiry;
+        }
+
+        const dealPrices = filteredVariants.map((v: any) => v.dealPrice);
+        const dealPrice = Math.min(...dealPrices);
+
+        const clonedProduct = JSON.parse(JSON.stringify(product)) as any;
+
+        expiringProducts.push({
+          ...clonedProduct,
+          dealVariants: filteredVariants,
+          isInDealPeriod: true,
+          dealPrice,
+          nearestExpiryDays
+        });
+      }
+    }
+
     const sortBy = req.query.sortBy as string;
-    
     if (sortBy === 'price-low' || sortBy === 'price-high') {
       expiringProducts.sort((a: any, b: any) => {
-        const aPrice = a.offerPrice || a.originalPrice || 0;
-        const bPrice = b.offerPrice || b.originalPrice || 0;
+        const pricesA = (a.dealVariants || []).map(
+          (v: any) => v.dealPrice ?? v.offerPrice ?? v.originalPrice ?? 0
+        );
+        const pricesB = (b.dealVariants || []).map(
+          (v: any) => v.dealPrice ?? v.offerPrice ?? v.originalPrice ?? 0
+        );
+        const aPrice =
+          pricesA.length > 0
+            ? sortBy === 'price-low'
+              ? Math.min(...pricesA)
+              : Math.max(...pricesA)
+            : (a.dealPrice ?? a.offerPrice ?? a.originalPrice ?? 0);
+        const bPrice =
+          pricesB.length > 0
+            ? sortBy === 'price-low'
+              ? Math.min(...pricesB)
+              : Math.max(...pricesB)
+            : (b.dealPrice ?? b.offerPrice ?? b.originalPrice ?? 0);
         return sortBy === 'price-low' ? aPrice - bPrice : bPrice - aPrice;
       });
     } else if (sortBy === 'name') {
-      expiringProducts.sort((a: any, b: any) => {
-        return a.name.localeCompare(b.name);
-      });
+      expiringProducts.sort((a: any, b: any) => a.name.localeCompare(b.name));
     } else {
-      // Default: Sort by remaining days (most urgent first)
-      expiringProducts.sort((a: any, b: any) => {
-        const aCreatedAt = new Date(a.createdAt);
-        const bCreatedAt = new Date(b.createdAt);
-        const aDaysSince = Math.floor(
-          (currentDate.getTime() - aCreatedAt.getTime()) / (1000 * 60 * 60 * 24)
-        );
-        const bDaysSince = Math.floor(
-          (currentDate.getTime() - bCreatedAt.getTime()) / (1000 * 60 * 60 * 24)
-        );
-        const aRemaining = a.shelfLife - aDaysSince;
-        const bRemaining = b.shelfLife - bDaysSince;
-        return aRemaining - bRemaining; // Sort ascending (0 days first)
-      });
+      expiringProducts.sort((a: any, b: any) =>
+        (a.nearestExpiryDays ?? Infinity) - (b.nearestExpiryDays ?? Infinity)
+      );
     }
 
-    // Apply pagination
     const startIndex = (page - 1) * pageSize;
-    const endIndex = startIndex + pageSize;
-    const paginatedProducts = expiringProducts.slice(startIndex, endIndex);
+    const paginatedProducts = expiringProducts.slice(startIndex, startIndex + pageSize);
 
     res.json({
       products: paginatedProducts,

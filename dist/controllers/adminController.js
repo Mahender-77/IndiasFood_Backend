@@ -3,17 +3,29 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.updateDeliverySettings = exports.getDeliveryLocations = exports.getDeliverySettings = exports.deactivateProduct = exports.toggleFlag = exports.updateStock = exports.updateInventoryProduct = exports.createInventoryProduct = exports.getInventory = exports.getAllProducts = exports.getRevenueToday = exports.getActiveDeliveryPersonsCount = exports.getTotalCustomersCount = exports.getTotalOrdersCount = exports.exportSalesByTime = exports.exportOrdersByTime = exports.exportSales = exports.exportProducts = exports.exportCustomers = exports.exportOrders = exports.assignDeliveryPerson = exports.deleteCategory = exports.updateCategory = exports.createCategory = exports.getCategories = exports.getCustomerById = exports.getCustomers = exports.getDeliveryPersons = exports.uploadProductImages = exports.updateProduct = exports.updateOrderToDelivered = exports.updateOrderStatus = exports.createProduct = exports.getAllOrders = void 0;
+exports.getAdminInvoice = exports.updateDeliverySettings = exports.getGiveAwayEligibleUsers = exports.applyGiveAwayToOrder = exports.getOrdersGiveAwayEligibilityBatch = exports.getOrderGiveAwayEligibility = exports.deleteGiveAway = exports.updateGiveAway = exports.createGiveAway = exports.getGiveAways = exports.getDeliveryLocations = exports.getDeliverySettings = exports.toggleMostSaled = exports.deactivateProduct = exports.toggleFlag = exports.updateStock = exports.updateInventoryProduct = exports.addBatches = exports.createInventoryProduct = exports.getInventory = exports.getAllProducts = exports.getRevenueToday = exports.getActiveDeliveryPersonsCount = exports.getTotalCustomersCount = exports.getTotalOrdersCount = exports.exportSalesByTime = exports.exportOrdersByTime = exports.exportSales = exports.exportProducts = exports.exportCustomers = exports.exportOrders = exports.assignDeliveryPerson = exports.deleteCategory = exports.updateCategory = exports.createCategory = exports.getCategories = exports.getCustomerById = exports.getCustomers = exports.getDeliveryPersons = exports.uploadProductImages = exports.updateProduct = exports.updateOrderToDelivered = exports.adminUpdateOrderStatus = exports.createProduct = exports.getAllOrders = void 0;
 const axios_1 = __importDefault(require("axios"));
 const crypto_1 = __importDefault(require("crypto"));
 const mongoose_1 = __importDefault(require("mongoose"));
 const path_1 = __importDefault(require("path"));
 const Category_1 = __importDefault(require("../models/Category")); // Import Category model
 const DeliverySettings_1 = __importDefault(require("../models/DeliverySettings"));
+const GiveAway_1 = __importDefault(require("../models/GiveAway"));
 const Order_1 = __importDefault(require("../models/Order"));
 const Product_1 = __importDefault(require("../models/Product"));
 const User_1 = __importDefault(require("../models/User")); // Import User model
+const pdfkit_1 = __importDefault(require("pdfkit")); // Import pdfkit
 const adminValidation_1 = require("../utils/adminValidation");
+const NEW_ARRIVAL_DAYS = 4;
+const expireOldNewArrivalFlags = async () => {
+    const cutoffDate = new Date(Date.now() - NEW_ARRIVAL_DAYS * 24 * 60 * 60 * 1000);
+    await Product_1.default.updateMany({
+        isNewArrival: true,
+        createdAt: { $lt: cutoffDate }
+    }, {
+        $set: { isNewArrival: false }
+    });
+};
 // @desc    Get all orders
 // @route   GET /api/admin/orders
 // @access  Private/Admin
@@ -28,104 +40,229 @@ const getAllOrders = async (req, res) => {
 };
 exports.getAllOrders = getAllOrders;
 // @desc    Create a new product
-// @route   POST /api/admin/products
+// @route   POST /api/admin/inventory/create-product
 // @access  Private/Admin
 const createProduct = async (req, res) => {
-    // Validate input data
+    // ---------------- VALIDATION ----------------
     const { error } = adminValidation_1.createProductSchema.validate(req.body);
     if (error) {
-        return res.status(400).json({ message: error.details[0].message });
+        return res.status(400).json({
+            message: error.details[0].message
+        });
     }
-    const { name, description, originalPrice, offerPrice, variants, shelfLife, category, inventory, videoUrl, images, isActive, isGITagged, isNewArrival } = req.body;
+    const { name, description, originalPrice, offerPrice, variants, category, inventory, videoUrl, images, isActive, isGITagged, isNewArrival, store, originLocation, dealTriggerDays, dealDiscountPercent } = req.body;
     try {
-        // Check if category exists
+        // ---------------- CHECK CATEGORY ----------------
         const categoryExists = await Category_1.default.findById(category);
         if (!categoryExists) {
-            return res.status(400).json({ message: 'Invalid category ID' });
+            return res.status(400).json({
+                message: 'Invalid category ID'
+            });
         }
-        // Validate variants if provided
+        // ---------------- CHECK STORE ----------------
+        if (!store) {
+            return res.status(400).json({
+                message: 'Store ID is required'
+            });
+        }
+        // ---------------- VALIDATE VARIANTS ----------------
         if (variants && variants.length > 0) {
             for (let i = 0; i < variants.length; i++) {
                 const variant = variants[i];
-                if (!variant.type || !variant.value || variant.originalPrice < 0) {
-                    return res.status(400).json({ message: `Variant ${i + 1} is missing required fields or has invalid pricing` });
+                if (!variant.type ||
+                    !variant.value ||
+                    variant.originalPrice < 0) {
+                    return res.status(400).json({
+                        message: `Variant ${i + 1} is invalid`
+                    });
                 }
             }
         }
-        // Create the product
+        // ---------------- SAFETY: INVENTORY DEFAULT ----------------
+        const safeInventory = Array.isArray(inventory) ? inventory : [];
+        const safeVariants = Array.isArray(variants) && variants.length > 0 ? variants : [];
+        // If NO variants → force variantIndex = 0 for batches and stock
+        if (safeVariants.length === 0) {
+            safeInventory.forEach((loc) => {
+                if (loc.batches?.length) {
+                    loc.batches = loc.batches.map((b) => ({ ...b, variantIndex: 0 }));
+                }
+                if (loc.stock?.length) {
+                    loc.stock = loc.stock.map((s) => ({ ...s, variantIndex: 0 }));
+                }
+            });
+        }
+        // ---------------- CREATE PRODUCT ----------------
         const product = new Product_1.default({
-            name,
-            description,
-            originalPrice,
-            offerPrice,
-            variants,
-            shelfLife,
+            name: name.trim(),
+            description: description?.trim() || '',
+            store,
+            originLocation: originLocation?.trim().toLowerCase() || undefined,
+            originalPrice: safeVariants.length === 0 ? originalPrice : undefined,
+            offerPrice: safeVariants.length === 0 ? offerPrice : undefined,
+            variants: safeVariants,
             category,
-            inventory,
-            videoUrl,
-            images,
-            isActive: isActive !== undefined ? isActive : true,
+            inventory: safeInventory,
+            videoUrl: videoUrl?.trim() || '',
+            images: images || [],
+            isActive: isActive ?? true,
             isGITagged: isGITagged || false,
-            isNewArrival: isNewArrival || false
+            isNewArrival: isNewArrival || false,
+            dealTriggerDays: dealTriggerDays != null ? Number(dealTriggerDays) : undefined,
+            dealDiscountPercent: dealDiscountPercent != null ? Number(dealDiscountPercent) : undefined
         });
-        const createdProduct = await product.save();
-        res.status(201).json({
+        const savedProduct = await product.save();
+        // ---------------- RETURN POPULATED + LEAN VERSION ----------------
+        // 🔥 This is the important part
+        const populatedProduct = await Product_1.default.findById(savedProduct._id)
+            .populate('category')
+            .lean({ virtuals: true });
+        return res.status(201).json({
             message: 'Product created successfully',
-            product: createdProduct
+            product: populatedProduct
         });
     }
     catch (error) {
         console.error('Error creating product:', error);
-        // Handle mongoose validation errors
-        if (error.name === 'ValidationError') {
-            const messages = Object.values(error.errors).map((err) => err.message);
-            return res.status(400).json({ message: 'Validation Error', details: messages });
-        }
-        // Handle duplicate key errors
-        if (error.code === 11000) {
-            return res.status(400).json({ message: 'Product with this name already exists' });
-        }
-        res.status(500).json({ message: 'Server error while creating product' });
+        return res.status(500).json({
+            message: error.message || 'Server error while creating product'
+        });
     }
 };
 exports.createProduct = createProduct;
-// @desc    Update order status
-// @route   PUT /api/admin/orders/:id/status
-// @access  Private/Admin
-const updateOrderStatus = async (req, res) => {
-    const { error } = adminValidation_1.updateOrderStatusSchema.validate(req.body);
-    if (error)
-        return res.status(400).json({ message: error.details[0].message });
-    const { status, cancelReason } = req.body;
-    const order = await Order_1.default.findById(req.params.id);
-    if (order) {
+// @desc    Admin Update Order Status
+// @route   PUT /api/admin/orders/:id/delivery-status
+// @access  Admin
+const adminUpdateOrderStatus = async (req, res) => {
+    try {
+        const { status, reason } = req.body;
+        const order = await Order_1.default.findById(req.params.id);
+        if (!order) {
+            return res.status(404).json({ message: 'Order not found' });
+        }
+        // ❌ Cannot modify delivered except cancel
+        if (order.isDelivered && status !== 'cancelled') {
+            return res.status(400).json({
+                message: 'Delivered order cannot be modified'
+            });
+        }
+        /* =====================================================
+           🔥 ADMIN CANCEL (FOR BOTH DELIVERY & PICKUP)
+        ====================================================== */
+        if (status === 'cancelled') {
+            if (!reason?.trim()) {
+                return res.status(400).json({
+                    message: 'Cancellation reason is required'
+                });
+            }
+            if (order.status === 'cancelled') {
+                return res.status(400).json({
+                    message: 'Order already cancelled'
+                });
+            }
+            /* 🚚 If delivery order → cancel U-Engage silently */
+            if (order.deliveryMode === 'delivery' &&
+                order.uengage?.taskId) {
+                try {
+                    await axios_1.default.post(`${process.env.UENGAGE_BASE}/cancelTask`, {
+                        storeId: process.env.STORE_ID,
+                        taskId: order.uengage.taskId
+                    }, {
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'access-token': process.env.UENGAGE_TOKEN
+                        }
+                    });
+                    order.uengage.statusCode = 'CANCELLED';
+                    order.uengage.message = 'Cancelled by admin';
+                }
+                catch (err) {
+                    order.uengage.statusCode = 'CANCEL_FAILED';
+                    order.uengage.message = 'Failed to cancel delivery task';
+                }
+            }
+            /* 📦 RESTORE STOCK (including giveaway items) */
+            const allItemsToRestore = [
+                ...(order.orderItems || []),
+                ...(order.giveAwayItems || [])
+            ];
+            for (const item of allItemsToRestore) {
+                const product = await Product_1.default.findById(item.product);
+                if (!product)
+                    continue;
+                const variantIndex = typeof item.selectedVariantIndex === 'number'
+                    ? item.selectedVariantIndex
+                    : 0;
+                const locationName = order.nearestStore?.toLowerCase();
+                if (!locationName)
+                    continue;
+                const inventoryLocation = product.inventory?.find(inv => inv.location === locationName);
+                if (!inventoryLocation)
+                    continue;
+                if (Array.isArray(inventoryLocation.batches)) {
+                    const now = new Date();
+                    inventoryLocation.batches = inventoryLocation.batches || [];
+                    inventoryLocation.batches.push({
+                        batchNumber: `RETURN-${Date.now()}`,
+                        quantity: item.qty,
+                        initialQuantity: item.qty,
+                        soldQuantity: 0,
+                        revenue: 0,
+                        giveAwayQuantity: 0,
+                        manufacturingDate: now,
+                        expiryDate: new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000),
+                        purchasePrice: 0,
+                        sellingPrice: 0,
+                        variantIndex
+                    });
+                }
+                else if (Array.isArray(inventoryLocation.stock)) {
+                    const stockItem = inventoryLocation.stock.find((s) => s.variantIndex === variantIndex);
+                    if (stockItem) {
+                        stockItem.quantity += item.qty;
+                    }
+                    else {
+                        inventoryLocation.stock.push({
+                            variantIndex,
+                            quantity: item.qty,
+                            lowStockThreshold: 5
+                        });
+                    }
+                }
+                await product.save();
+            }
+            // ✅ SAVE REASON FOR USER ONLY
+            order.status = 'cancelled';
+            order.cancelReason = reason; // 🔥 shown to user
+            order.cancelledAt = new Date();
+            await order.save();
+            return res.json(order);
+        }
+        /* =====================================================
+           NORMAL STATUS UPDATES
+        ====================================================== */
+        if (status === 'confirmed') {
+            order.status = 'confirmed';
+        }
+        if (status === 'out_for_delivery') {
+            order.status = 'out_for_delivery';
+        }
         if (status === 'delivered') {
+            order.status = 'delivered';
             order.isDelivered = true;
             order.deliveredAt = new Date();
         }
-        else if (status === 'confirmed') {
-            order.isPaid = true;
-            order.paidAt = new Date();
-        }
-        else if (status === 'cancelled') {
-            order.status = 'cancelled';
-            order.cancelReason = cancelReason;
-            order.cancelledAt = new Date();
-            // Clear delivery assignments when cancelled
-            order.deliveryPerson = undefined;
-            order.eta = undefined;
-        }
-        else {
-            order.status = status;
-        }
-        const updatedOrder = await order.save();
-        res.json(updatedOrder);
+        await order.save();
+        return res.json(order);
     }
-    else {
-        res.status(404).json({ message: 'Order not found' });
+    catch (error) {
+        console.error('Admin update error:', error);
+        return res.status(500).json({
+            message: 'Failed to update order status'
+        });
     }
 };
-exports.updateOrderStatus = updateOrderStatus;
+exports.adminUpdateOrderStatus = adminUpdateOrderStatus;
 // @desc    Update order delivery status
 // @route   PUT /api/admin/orders/:id/delivery
 // @access  Private/Admin
@@ -161,7 +298,7 @@ const updateProduct = async (req, res) => {
     const { error } = adminValidation_1.updateProductSchema.validate(req.body);
     if (error)
         return res.status(400).json({ message: error.details[0].message });
-    const { name, description, originalPrice, offerPrice, variants, shelfLife, category, inventory, videoUrl, images, isActive, isGITagged, isNewArrival } = req.body;
+    const { name, description, originalPrice, offerPrice, variants, category, inventory, videoUrl, images, isActive, isGITagged, isNewArrival } = req.body;
     try {
         const product = await Product_1.default.findById(req.params.id);
         if (!product) {
@@ -179,7 +316,6 @@ const updateProduct = async (req, res) => {
         product.description = description !== undefined ? description : product.description;
         product.originalPrice = originalPrice !== undefined ? originalPrice : product.originalPrice;
         product.offerPrice = offerPrice !== undefined ? offerPrice : product.offerPrice;
-        product.shelfLife = shelfLife !== undefined ? shelfLife : product.shelfLife;
         product.category = category || product.category;
         product.videoUrl = videoUrl !== undefined ? videoUrl : product.videoUrl;
         product.images = images !== undefined ? images : product.images;
@@ -707,11 +843,16 @@ exports.getRevenueToday = getRevenueToday;
 // ==================== INVENTORY MANAGEMENT ====================
 const getAllProducts = async (req, res) => {
     try {
-        const products = await Product_1.default.find({}).populate('category', 'name _id');
+        await expireOldNewArrivalFlags();
+        const products = await Product_1.default.find()
+            .populate('category')
+            .sort({ createdAt: -1 })
+            .lean({ virtuals: true });
         res.json(products);
     }
     catch (error) {
-        res.status(500).json({ message: error.message });
+        console.error('Inventory fetch error:', error);
+        res.status(500).json({ message: 'Failed to fetch inventory' });
     }
 };
 exports.getAllProducts = getAllProducts;
@@ -745,50 +886,36 @@ const validateUpdateProduct = (req, res, next) => {
     }
     next();
 };
-// POST /api/admin/inventory/products - Create new product
+// POST /api/admin/inventory/create-product - Step 1: Basic product only (no store, price, deal - those come with batches)
 const createInventoryProduct = async (req, res) => {
+    const { error } = adminValidation_1.createProductBasicSchema.validate(req.body);
+    if (error) {
+        return res.status(400).json({ message: error.details[0].message });
+    }
+    const data = req.body;
     try {
-        const productData = req.body;
-        /* ---------- BASIC VALIDATION ---------- */
-        if (!productData.name?.trim()) {
-            return res.status(400).json({ message: 'Product name is required' });
+        const categoryExists = await Category_1.default.findById(data.category);
+        if (!categoryExists) {
+            return res.status(400).json({ message: 'Invalid category ID' });
         }
-        if (!productData.category) {
-            return res.status(400).json({ message: 'Category is required' });
-        }
-        if (!productData.store) {
-            return res.status(400).json({ message: 'Store ID is required' });
-        }
-        if (!mongoose_1.default.Types.ObjectId.isValid(productData.store)) {
-            return res.status(400).json({ message: 'Invalid store ID' });
-        }
-        /* ---------- VERIFY STORE EXISTS (storeLocations.storeId) ---------- */
-        const storeExists = await DeliverySettings_1.default.exists({
-            storeLocations: {
-                $elemMatch: {
-                    storeId: productData.store,
-                    isActive: true // optional but recommended
-                }
-            }
-        });
-        if (!storeExists) {
-            return res.status(400).json({ message: 'Store not found or inactive' });
-        }
-        /* ---------- PRICE VALIDATION ---------- */
-        if ((!productData.variants || productData.variants.length === 0) &&
-            (productData.originalPrice === undefined || productData.originalPrice <= 0)) {
-            return res.status(400).json({
-                message: 'Original price is required for non-variant products'
-            });
-        }
-        /* ---------- CREATE PRODUCT ---------- */
         const product = new Product_1.default({
-            ...productData,
-            store: productData.store // 🔒 enforce store explicitly
+            name: data.name.trim(),
+            description: data.description?.trim() || '',
+            category: data.category,
+            subcategory: data.subcategory || undefined,
+            videoUrl: data.videoUrl?.trim() || '',
+            images: data.images || [],
+            originLocation: data.originLocation?.trim().toLowerCase() || undefined,
+            isGITagged: data.isGITagged ?? false,
+            isNewArrival: data.isNewArrival ?? false,
+            isMostSaled: data.isMostSaled ?? false,
+            isActive: data.isActive ?? true,
+            variants: [],
+            inventory: [],
         });
         await product.save();
         await product.populate('category');
-        return res.status(201).json(product);
+        return res.status(201).json({ message: 'Product created', product });
     }
     catch (error) {
         console.error('Error creating product:', error);
@@ -802,91 +929,268 @@ const createInventoryProduct = async (req, res) => {
     }
 };
 exports.createInventoryProduct = createInventoryProduct;
-// PUT /api/admin/inventory/:id - Update product + flags
-const updateInventoryProduct = async (req, res) => {
+// PUT /api/admin/inventory/:productId/batches - Step 2/3: Add variants + batches
+// Supports both with-variant and without-variant product creation; does not alter variant flow.
+const addBatches = async (req, res) => {
+    const { error } = adminValidation_1.addBatchesSchema.validate(req.body);
+    if (error) {
+        return res.status(400).json({ message: error.details[0].message });
+    }
+    const productId = req.params.id;
+    const { store, originalPrice, offerPrice, addVariants, batches } = req.body;
     try {
-        const product = await Product_1.default.findByIdAndUpdate(req.params.id, req.body, { new: true }).populate('category');
-        if (!product) {
-            return res.status(404).json({ message: 'Product not found' });
+        if (!mongoose_1.default.Types.ObjectId.isValid(productId)) {
+            return res.status(400).json({ message: 'Invalid product ID' });
         }
-        res.json(product);
+        if (!mongoose_1.default.Types.ObjectId.isValid(store)) {
+            return res.status(400).json({ message: 'Invalid store ID' });
+        }
+        const storeExists = await DeliverySettings_1.default.exists({
+            storeLocations: { $elemMatch: { storeId: store, isActive: true } }
+        });
+        if (!storeExists) {
+            return res.status(400).json({ message: 'Store not found or inactive' });
+        }
+        const product = await Product_1.default.findById(productId);
+        if (!product)
+            return res.status(404).json({ message: 'Product not found' });
+        product.store = store;
+        if (originalPrice != null)
+            product.originalPrice = Number(originalPrice);
+        if (offerPrice != null)
+            product.offerPrice = Number(offerPrice);
+        if (addVariants && addVariants.length > 0) {
+            if (!product.variants)
+                product.variants = [];
+            for (const v of addVariants) {
+                product.variants.push({
+                    type: v.type,
+                    value: v.value,
+                    originalPrice: v.originalPrice,
+                    offerPrice: v.offerPrice
+                });
+            }
+        }
+        const variantCount = Math.max(1, product.variants?.length ?? 0);
+        const maxVariantIndex = variantCount - 1;
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        // Build a fresh inventory array so Mongoose reliably persists (avoid in-place nested push)
+        const locationMap = new Map();
+        // Copy existing inventory into the map (preserve existing batches/stock)
+        const existingInventory = Array.isArray(product.inventory) ? product.inventory : [];
+        for (const inv of existingInventory) {
+            const locName = String(inv.location || '').trim().toLowerCase();
+            if (!locName)
+                continue;
+            locationMap.set(locName, {
+                location: locName,
+                batches: Array.isArray(inv.batches) ? inv.batches.map((b) => ({ ...b })) : [],
+                stock: Array.isArray(inv.stock) ? inv.stock.map((s) => ({ ...s })) : []
+            });
+        }
+        // Add each new batch to the correct location
+        for (const b of batches) {
+            const variantIndex = b.variantIndex ?? 0;
+            if (variantIndex < 0 || variantIndex > maxVariantIndex) {
+                return res.status(400).json({ message: `variantIndex must be 0-${maxVariantIndex}` });
+            }
+            const expiryDate = new Date(b.expiryDate);
+            expiryDate.setHours(0, 0, 0, 0);
+            if (expiryDate <= today) {
+                return res.status(400).json({ message: 'Cannot add expired batch' });
+            }
+            const locName = String(b.location).trim().toLowerCase();
+            if (!locName)
+                continue;
+            let entry = locationMap.get(locName);
+            if (!entry) {
+                entry = { location: locName, batches: [], stock: [] };
+                locationMap.set(locName, entry);
+            }
+            entry.batches.push({
+                batchNumber: b.batchNumber,
+                quantity: Number(b.quantity),
+                // Track original quantity for analytics inference.
+                initialQuantity: Number(b.quantity),
+                soldQuantity: 0,
+                revenue: 0,
+                giveAwayQuantity: 0,
+                manufacturingDate: new Date(b.manufacturingDate),
+                expiryDate: new Date(b.expiryDate),
+                purchasePrice: Number(b.purchasePrice),
+                sellingPrice: Number(b.sellingPrice),
+                variantIndex,
+                batchWholePrice: b.batchWholePrice != null && Number(b.batchWholePrice) >= 0 ? Number(b.batchWholePrice) : undefined,
+                dealTriggerDays: b.dealTriggerDays != null ? Number(b.dealTriggerDays) : undefined,
+                dealDiscountPercent: b.dealDiscountPercent != null ? Number(b.dealDiscountPercent) : undefined,
+            });
+        }
+        // Replace product.inventory with the new array so Mongoose persists it
+        product.inventory = Array.from(locationMap.values());
+        product.markModified('inventory');
+        product.markModified('variants');
+        await product.save();
+        const updated = await Product_1.default.findById(productId).populate('category').lean({ virtuals: true });
+        return res.status(200).json({ message: 'Batches added', product: updated });
     }
     catch (error) {
+        console.error('Error adding batches:', error);
+        return res.status(500).json({ message: error.message });
+    }
+};
+exports.addBatches = addBatches;
+// PUT /api/admin/inventory/:id - Update product + flags
+// PUT /api/admin/inventory/products/:id
+const updateInventoryProduct = async (req, res) => {
+    try {
+        const updatedProduct = await Product_1.default.findByIdAndUpdate(req.params.id, { $set: req.body }, // 🔥 SAFE UPDATE
+        {
+            new: true,
+            runValidators: true // 🔥 IMPORTANT
+        }).populate('category');
+        if (!updatedProduct) {
+            return res.status(404).json({ message: 'Product not found' });
+        }
+        res.status(200).json(updatedProduct);
+    }
+    catch (error) {
+        console.error("Update error:", error);
         res.status(400).json({ message: error.message });
     }
 };
 exports.updateInventoryProduct = updateInventoryProduct;
-// PUT /api/admin/inventory/:id/stock - Update specific location stock
+// PUT /api/admin/inventory/:id/stock - Update specific location stock (supports batches & legacy stock)
+// Works for both with-variant and without-variant products; does not alter variant flow.
 const updateStock = async (req, res) => {
     try {
-        // Validate input parameters
         const { id } = req.params;
-        const { location, variantIndex, quantity } = req.body;
-        if (!id || !location || typeof variantIndex !== 'number' || typeof quantity !== 'number') {
+        const { location, variantIndex: variantIndexRaw, quantity, batchNumber, manufacturingDate, expiryDate, purchasePrice, sellingPrice, batchWholePrice, dealTriggerDays, dealDiscountPercent } = req.body;
+        const variantIndex = typeof variantIndexRaw === 'number' ? variantIndexRaw : Number(variantIndexRaw);
+        if (!id || !location || (typeof quantity !== 'number' && (quantity === undefined || quantity === null))) {
             return res.status(400).json({
                 message: 'Invalid input parameters',
                 required: 'productId, location, variantIndex (number), quantity (number)'
             });
         }
-        if (quantity < 0) {
-            return res.status(400).json({ message: 'Quantity cannot be negative' });
+        const qty = Number(quantity);
+        if (Number.isNaN(qty) || qty < 0) {
+            return res.status(400).json({ message: 'Quantity must be a non-negative number' });
         }
-        // Check if product exists
         const product = await Product_1.default.findById(id);
         if (!product) {
             return res.status(404).json({ message: 'Product not found' });
         }
-        // Find if location already exists in inventory
-        const locationIndex = product.inventory?.findIndex(inv => inv.location === location) ?? -1;
-        if (locationIndex >= 0) {
-            // Location exists - update or add variant stock
-            const existingLocation = product.inventory[locationIndex];
-            const stockIndex = existingLocation.stock?.findIndex(stock => stock.variantIndex === variantIndex) ?? -1;
-            if (stockIndex >= 0) {
-                // Variant stock exists - update quantity
-                existingLocation.stock[stockIndex].quantity = quantity;
+        const maxVariantIndex = Math.max(0, (product.variants?.length ?? 1) - 1);
+        if (Number.isNaN(variantIndex) || variantIndex < 0 || variantIndex > maxVariantIndex) {
+            return res.status(400).json({
+                message: `variantIndex must be 0-${maxVariantIndex} for this product`
+            });
+        }
+        const now = new Date();
+        const defaultExpiry = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+        const variants = product.variants && product.variants.length > 0 ? product.variants : [];
+        const variant = variants[variantIndex];
+        const unitPurchasePrice = typeof purchasePrice === 'number' && purchasePrice >= 0
+            ? purchasePrice
+            : (variant?.originalPrice ?? product.originalPrice ?? product.offerPrice ?? 0);
+        const unitSellingPrice = typeof sellingPrice === 'number' && sellingPrice >= 0
+            ? sellingPrice
+            : (variant?.offerPrice ?? variant?.originalPrice ?? product.offerPrice ?? product.originalPrice ?? 0);
+        const useBatches = batchNumber || manufacturingDate || expiryDate;
+        const locName = String(location).trim().toLowerCase();
+        if (!locName) {
+            return res.status(400).json({ message: 'Location is required' });
+        }
+        // Build a fresh inventory array so Mongoose persists (same pattern as addBatches)
+        const locationMap = new Map();
+        const existingInventory = Array.isArray(product.inventory) ? product.inventory : [];
+        for (const inv of existingInventory) {
+            const name = String(inv.location || '').trim().toLowerCase();
+            if (!name)
+                continue;
+            locationMap.set(name, {
+                location: name,
+                batches: Array.isArray(inv.batches) ? inv.batches.map((b) => ({ ...b })) : [],
+                stock: Array.isArray(inv.stock) ? inv.stock.map((s) => ({ ...s })) : []
+            });
+        }
+        let entry = locationMap.get(locName);
+        if (!entry) {
+            entry = { location: locName, batches: [], stock: [] };
+            locationMap.set(locName, entry);
+        }
+        const safeDate = (d, fallback) => {
+            if (d == null)
+                return fallback;
+            const t = new Date(d);
+            return isNaN(t.getTime()) ? fallback : t;
+        };
+        if (useBatches) {
+            const newBatch = {
+                batchNumber: batchNumber || `BATCH-${Date.now()}`,
+                quantity: qty,
+                initialQuantity: qty,
+                soldQuantity: 0,
+                revenue: 0,
+                giveAwayQuantity: 0,
+                manufacturingDate: safeDate(manufacturingDate, now),
+                expiryDate: safeDate(expiryDate, defaultExpiry),
+                purchasePrice: Number(unitPurchasePrice),
+                sellingPrice: Number(unitSellingPrice),
+                variantIndex,
+                batchWholePrice: batchWholePrice != null && Number(batchWholePrice) >= 0 ? Number(batchWholePrice) : undefined,
+                dealTriggerDays: dealTriggerDays != null && Number(dealTriggerDays) >= 0 ? Number(dealTriggerDays) : undefined,
+                dealDiscountPercent: dealDiscountPercent != null && Number(dealDiscountPercent) >= 0 ? Number(dealDiscountPercent) : undefined
+            };
+            const existingIdx = entry.batches.findIndex((b) => b.batchNumber === newBatch.batchNumber && b.variantIndex === variantIndex);
+            if (existingIdx >= 0) {
+                entry.batches[existingIdx] = newBatch;
             }
             else {
-                // Variant stock does not exist - initialize it
-                existingLocation.stock.push({
-                    variantIndex,
-                    quantity,
-                    lowStockThreshold: 5
-                });
+                entry.batches.push(newBatch);
             }
-            // Save the updated product
-            await product.save();
+            entry.stock = entry.stock.filter((s) => s.variantIndex !== variantIndex);
         }
         else {
-            // Location does NOT exist - create new inventory entry
-            if (!product.inventory) {
-                product.inventory = [];
-            }
-            product.inventory.push({
-                location,
-                stock: [{
-                        variantIndex,
-                        quantity,
-                        lowStockThreshold: 5
-                    }]
+            entry.batches = entry.batches.filter((b) => b.variantIndex !== variantIndex);
+            entry.batches.push({
+                batchNumber: `BATCH-${Date.now()}`,
+                quantity: qty,
+                initialQuantity: qty,
+                soldQuantity: 0,
+                revenue: 0,
+                giveAwayQuantity: 0,
+                manufacturingDate: now,
+                expiryDate: defaultExpiry,
+                purchasePrice: Number(unitPurchasePrice),
+                sellingPrice: Number(unitSellingPrice),
+                variantIndex,
+                batchWholePrice: batchWholePrice != null && Number(batchWholePrice) >= 0 ? Number(batchWholePrice) : undefined,
+                dealTriggerDays: dealTriggerDays != null && Number(dealTriggerDays) >= 0 ? Number(dealTriggerDays) : undefined,
+                dealDiscountPercent: dealDiscountPercent != null && Number(dealDiscountPercent) >= 0 ? Number(dealDiscountPercent) : undefined
             });
-            // Save the updated product
-            await product.save();
+            const si = entry.stock.findIndex((s) => s.variantIndex === variantIndex);
+            if (si >= 0) {
+                entry.stock[si].quantity = qty;
+            }
+            else {
+                entry.stock.push({ variantIndex, quantity: qty, lowStockThreshold: 5 });
+            }
         }
+        product.inventory = Array.from(locationMap.values());
+        product.markModified('inventory');
+        await product.save();
         res.json({
             success: true,
-            message: `Stock updated successfully for ${location} (variant ${variantIndex})`,
-            data: {
-                location,
-                variantIndex,
-                quantity
-            }
+            message: `Stock updated for ${locName} (variant ${variantIndex})`,
+            data: { location: locName, variantIndex, quantity: qty }
         });
     }
     catch (error) {
         console.error('Error updating stock:', error);
         res.status(500).json({
-            message: 'Failed to update stock',
+            message: error.message || 'Failed to update stock',
             error: error.message
         });
     }
@@ -926,6 +1230,25 @@ const deactivateProduct = async (req, res) => {
     }
 };
 exports.deactivateProduct = deactivateProduct;
+// PUT /api/admin/inventory/:id/most-saled - Toggle product most saled flag
+const toggleMostSaled = async (req, res) => {
+    try {
+        const { value } = req.body; // boolean value for isMostSaled
+        // Validate value type
+        if (typeof value !== 'boolean') {
+            return res.status(400).json({ message: 'Invalid value type for isMostSaled' });
+        }
+        const product = await Product_1.default.findByIdAndUpdate(req.params.id, { isMostSaled: value }, { new: true });
+        if (!product) {
+            return res.status(404).json({ message: 'Product not found' });
+        }
+        res.json({ success: true, isMostSaled: product.isMostSaled });
+    }
+    catch (error) {
+        res.status(400).json({ message: error.message });
+    }
+};
+exports.toggleMostSaled = toggleMostSaled;
 // @desc    Get delivery settings
 // @route   GET /api/admin/delivery-settings
 // @access  Private/Admin
@@ -964,12 +1287,665 @@ const getDeliveryLocations = async (req, res) => {
     })));
 };
 exports.getDeliveryLocations = getDeliveryLocations;
+// ==================== GIVEAWAY MANAGEMENT ====================
+// @desc    Get all giveaways
+// @route   GET /api/admin/giveaways
+// @access  Private/Admin
+const getGiveAways = async (req, res) => {
+    try {
+        const items = await GiveAway_1.default.find().sort({ createdAt: -1 }).lean();
+        return res.json(items);
+    }
+    catch (error) {
+        return res.status(500).json({ message: error.message || 'Failed to fetch giveaways' });
+    }
+};
+exports.getGiveAways = getGiveAways;
+// @desc    Create giveaway
+// @route   POST /api/admin/giveaways
+// @access  Private/Admin
+const createGiveAway = async (req, res) => {
+    console.log('createGiveAway', req.body);
+    try {
+        const { title, description, isActive, startAt, endAt, conditions, reward } = req.body || {};
+        if (!title || !String(title).trim()) {
+            return res.status(400).json({ message: 'Title is required' });
+        }
+        const safeReward = reward && reward.type
+            ? reward
+            : { type: 'other', label: 'Deal-of-the-day giveaway' };
+        if (safeReward.type === 'percentage_discount' && (safeReward.value == null || Number(safeReward.value) > 100)) {
+            return res.status(400).json({ message: 'Percentage discount must be <= 100' });
+        }
+        const parsedStartAt = startAt ? new Date(startAt) : undefined;
+        const parsedEndAt = endAt ? new Date(endAt) : undefined;
+        if (parsedStartAt && isNaN(parsedStartAt.getTime())) {
+            return res.status(400).json({ message: 'Invalid startAt date' });
+        }
+        if (parsedEndAt && isNaN(parsedEndAt.getTime())) {
+            return res.status(400).json({ message: 'Invalid endAt date' });
+        }
+        if (parsedStartAt && parsedEndAt && parsedEndAt < parsedStartAt) {
+            return res.status(400).json({ message: 'endAt must be after startAt' });
+        }
+        const safeConditions = Array.isArray(conditions) ? conditions : [];
+        const sanitizedConditions = safeConditions
+            .filter((c) => c && c.type)
+            .map((c) => ({
+            type: c.type,
+            value: Number(c.value) || 0,
+            isEnabled: c.isEnabled !== false
+        }));
+        const doc = await GiveAway_1.default.create({
+            title: String(title).trim(),
+            description: description ? String(description).trim() : '',
+            isActive: isActive !== false,
+            startAt: parsedStartAt,
+            endAt: parsedEndAt,
+            conditions: sanitizedConditions,
+            reward: {
+                type: safeReward.type,
+                value: safeReward.value != null ? Number(safeReward.value) : undefined,
+                label: safeReward.label ? String(safeReward.label).trim() : undefined,
+                productId: safeReward.productId || undefined
+            },
+            createdBy: req.user?._id
+        });
+        return res.status(201).json(doc);
+    }
+    catch (error) {
+        return res.status(500).json({ message: error.message || 'Failed to create giveaway' });
+    }
+};
+exports.createGiveAway = createGiveAway;
+// @desc    Update giveaway
+// @route   PUT /api/admin/giveaways/:id
+// @access  Private/Admin
+const updateGiveAway = async (req, res) => {
+    try {
+        const id = req.params.id;
+        const { title, description, isActive, startAt, endAt, conditions, reward } = req.body || {};
+        const existing = await GiveAway_1.default.findById(id);
+        if (!existing)
+            return res.status(404).json({ message: 'Giveaway not found' });
+        if (title != null && !String(title).trim()) {
+            return res.status(400).json({ message: 'Title cannot be empty' });
+        }
+        const parsedStartAt = startAt != null ? (startAt ? new Date(startAt) : undefined) : existing.startAt;
+        const parsedEndAt = endAt != null ? (endAt ? new Date(endAt) : undefined) : existing.endAt;
+        if (parsedStartAt && isNaN(parsedStartAt.getTime())) {
+            return res.status(400).json({ message: 'Invalid startAt date' });
+        }
+        if (parsedEndAt && isNaN(parsedEndAt.getTime())) {
+            return res.status(400).json({ message: 'Invalid endAt date' });
+        }
+        if (parsedStartAt && parsedEndAt && parsedEndAt < parsedStartAt) {
+            return res.status(400).json({ message: 'endAt must be after startAt' });
+        }
+        if (title != null)
+            existing.title = String(title).trim();
+        if (description != null)
+            existing.description = String(description).trim();
+        if (isActive != null)
+            existing.isActive = Boolean(isActive);
+        if (startAt != null)
+            existing.startAt = parsedStartAt;
+        if (endAt != null)
+            existing.endAt = parsedEndAt;
+        if (conditions != null) {
+            const safeConditions = Array.isArray(conditions) ? conditions : [];
+            existing.conditions = safeConditions
+                .filter((c) => c && c.type)
+                .map((c) => ({
+                type: c.type,
+                value: Number(c.value) || 0,
+                isEnabled: c.isEnabled !== false
+            }));
+            existing.markModified('conditions');
+        }
+        if (reward != null) {
+            const safeReward = reward && reward.type
+                ? reward
+                : { type: 'other', label: 'Deal-of-the-day giveaway' };
+            if (safeReward.type === 'percentage_discount' && (safeReward.value == null || Number(safeReward.value) > 100)) {
+                return res.status(400).json({ message: 'Percentage discount must be <= 100' });
+            }
+            existing.reward = {
+                type: safeReward.type,
+                value: safeReward.value != null ? Number(safeReward.value) : undefined,
+                label: safeReward.label ? String(safeReward.label).trim() : undefined,
+                productId: safeReward.productId || undefined
+            };
+            existing.markModified('reward');
+        }
+        await existing.save();
+        return res.json(existing);
+    }
+    catch (error) {
+        return res.status(500).json({ message: error.message || 'Failed to update giveaway' });
+    }
+};
+exports.updateGiveAway = updateGiveAway;
+// @desc    Delete giveaway
+// @route   DELETE /api/admin/giveaways/:id
+// @access  Private/Admin
+const deleteGiveAway = async (req, res) => {
+    try {
+        const id = req.params.id;
+        const existing = await GiveAway_1.default.findById(id);
+        if (!existing)
+            return res.status(404).json({ message: 'Giveaway not found' });
+        await existing.deleteOne();
+        return res.json({ message: 'Giveaway deleted' });
+    }
+    catch (error) {
+        return res.status(500).json({ message: error.message || 'Failed to delete giveaway' });
+    }
+};
+exports.deleteGiveAway = deleteGiveAway;
+// ==================== GIVEAWAY PER-ORDER (Admin) ====================
+const isWithinGiveAwayWindow = (g, now) => {
+    const s = g.startAt ? new Date(g.startAt) : null;
+    const e = g.endAt ? new Date(g.endAt) : null;
+    if (s && now < s)
+        return false;
+    if (e && now > e)
+        return false;
+    return true;
+};
+const getDealOfDayNowForProduct = (product, now) => {
+    const currentDate = new Date(now);
+    currentDate.setHours(0, 0, 0, 0);
+    const productTriggerDays = product.dealTriggerDays ?? 0;
+    const productDiscountPercent = product.dealDiscountPercent ?? 0;
+    const inventory = product.inventory || [];
+    for (const loc of inventory) {
+        const batches = loc.batches || [];
+        for (const batch of batches) {
+            const triggerDays = batch.dealTriggerDays ?? productTriggerDays;
+            const batchDiscount = batch.dealDiscountPercent ?? productDiscountPercent;
+            if (triggerDays <= 0 || batchDiscount <= 0)
+                continue;
+            const batchExpiry = new Date(batch.expiryDate);
+            batchExpiry.setHours(0, 0, 0, 0);
+            const dealStartDate = new Date(batchExpiry);
+            dealStartDate.setDate(dealStartDate.getDate() - triggerDays);
+            if (currentDate >= dealStartDate && currentDate <= batchExpiry && (batch.quantity || 0) > 0) {
+                return true;
+            }
+        }
+    }
+    return false;
+};
+const isDealOfDayBatchEligibleForProduct = (product, batch, now) => {
+    const currentDate = new Date(now);
+    currentDate.setHours(0, 0, 0, 0);
+    const productTriggerDays = product.dealTriggerDays ?? 0;
+    const productDiscountPercent = product.dealDiscountPercent ?? 0;
+    const triggerDays = batch.dealTriggerDays ?? productTriggerDays;
+    const batchDiscount = batch.dealDiscountPercent ?? productDiscountPercent;
+    if (triggerDays <= 0 || batchDiscount <= 0)
+        return false;
+    const batchExpiry = new Date(batch.expiryDate);
+    batchExpiry.setHours(0, 0, 0, 0);
+    const dealStartDate = new Date(batchExpiry);
+    dealStartDate.setDate(dealStartDate.getDate() - triggerDays);
+    return (currentDate >= dealStartDate &&
+        currentDate <= batchExpiry &&
+        (batch.quantity || 0) > 0);
+};
+const isDealOfDayNowForProductInStore = (product, storeName, now) => {
+    const inventory = product.inventory || [];
+    const store = storeName.toLowerCase();
+    for (const loc of inventory) {
+        if ((loc.location || '').toLowerCase() !== store)
+            continue;
+        const batches = loc.batches || [];
+        for (const batch of batches) {
+            if (isDealOfDayBatchEligibleForProduct(product, batch, now))
+                return true;
+        }
+    }
+    return false;
+};
+const getDealEligibleQtyByVariantIndexAtStore = (product, storeName, now) => {
+    const variants = product.variants || [];
+    const maxVariants = Math.max(1, variants.length);
+    const res = Array.from({ length: maxVariants }, () => 0);
+    const isVariantActive = (i) => variants[i]?.isActive !== false;
+    const inventory = product.inventory || [];
+    const inv = inventory.find((i) => (i.location || '').toLowerCase() === storeName.toLowerCase());
+    if (!inv)
+        return res;
+    const batches = inv.batches || [];
+    if (!batches.length)
+        return res; // without batch info, we can't reliably calculate deal window quantity
+    for (const b of batches) {
+        const vi = Number(b.variantIndex ?? 0);
+        if (vi < 0 || vi >= maxVariants)
+            continue;
+        if (!isVariantActive(vi))
+            continue;
+        if (!isDealOfDayBatchEligibleForProduct(product, b, now))
+            continue;
+        res[vi] += b.quantity || 0;
+    }
+    return res;
+};
+const loadGiveAwayUserStats = async (userId, now) => {
+    const startOfToday = new Date(now);
+    startOfToday.setHours(0, 0, 0, 0);
+    const endOfToday = new Date(now);
+    endOfToday.setHours(23, 59, 59, 999);
+    const [ordersTodayCount, lifetimeOrders, spentAgg] = await Promise.all([
+        Order_1.default.countDocuments({
+            user: userId,
+            createdAt: { $gte: startOfToday, $lte: endOfToday }
+        }),
+        Order_1.default.countDocuments({ user: userId }),
+        Order_1.default.aggregate([
+            { $match: { user: userId, status: { $ne: 'cancelled' } } },
+            { $group: { _id: null, total: { $sum: '$totalPrice' } } }
+        ])
+    ]);
+    const lifetimeSpent = spentAgg?.[0]?.total || 0;
+    return { ordersTodayCount, lifetimeOrders, lifetimeSpent };
+};
+/** Sync evaluation using preloaded user stats (for batch eligibility). */
+const evaluateGiveAwayConditions = (orderTotal, giveAwayDoc, stats) => {
+    const enabledConditions = (giveAwayDoc.conditions || []).filter((c) => c && c.isEnabled !== false);
+    for (const c of enabledConditions) {
+        if (c.type === 'minOrderAmount') {
+            if (orderTotal < Number(c.value || 0))
+                return false;
+        }
+        if (c.type === 'minOrdersInDay') {
+            if (stats.ordersTodayCount < Number(c.value || 0))
+                return false;
+        }
+        if (c.type === 'minLifetimeOrders') {
+            if (stats.lifetimeOrders < Number(c.value || 0))
+                return false;
+        }
+        if (c.type === 'minLifetimeSpent') {
+            if (stats.lifetimeSpent < Number(c.value || 0))
+                return false;
+        }
+    }
+    return true;
+};
+// @desc    Check if order is eligible for any giveaway & list Deal-of-the-Day products
+// @route   GET /api/admin/orders/:id/giveaway-eligibility
+// @access  Private/Admin
+const getOrderGiveAwayEligibility = async (req, res) => {
+    try {
+        const order = await Order_1.default.findById(req.params.id).lean();
+        if (!order)
+            return res.status(404).json({ message: 'Order not found' });
+        if (order.status === 'cancelled') {
+            return res.json({ eligible: false, reason: 'Order is cancelled' });
+        }
+        if (order.giveAwayItems?.length) {
+            return res.json({ eligible: false, reason: 'GiveAway already applied for this order' });
+        }
+        const storeName = (order.storeName || order.nearestStore || '').toString().trim();
+        if (!storeName) {
+            return res.json({ eligible: false, reason: 'Order store is missing (cannot deduct inventory)' });
+        }
+        const now = new Date();
+        const giveAways = await GiveAway_1.default.find({ isActive: true }).sort({ createdAt: -1 }).lean();
+        const stats = await loadGiveAwayUserStats(order.user, now);
+        let matched = null;
+        for (const g of giveAways) {
+            if (!isWithinGiveAwayWindow(g, now))
+                continue;
+            const ok = evaluateGiveAwayConditions(order.totalPrice || 0, g, stats);
+            if (ok) {
+                matched = g;
+                break;
+            }
+        }
+        if (!matched) {
+            return res.json({ eligible: false, reason: 'No matching giveaway conditions' });
+        }
+        // list current deal-of-the-day products for THIS order store (lean already)
+        const products = await Product_1.default.find({ isActive: true }).lean();
+        const dealProducts = products.filter((p) => isDealOfDayNowForProductInStore(p, storeName, now));
+        return res.json({
+            eligible: true,
+            giveAwayId: matched._id,
+            giveAwayTitle: matched.title,
+            dealProducts: dealProducts.map((p) => ({
+                _id: p._id,
+                name: p.name,
+                images: p.images || [],
+                originalPrice: p.originalPrice,
+                offerPrice: p.offerPrice,
+                variants: p.variants || [],
+                // Qty that exists inside the Deal-of-the-Day window for this store (used to cap admin qty)
+                availableQtyByVariantIndex: getDealEligibleQtyByVariantIndexAtStore(p, storeName, now),
+            }))
+        });
+    }
+    catch (error) {
+        return res.status(500).json({ message: error.message || 'Failed to check eligibility' });
+    }
+};
+exports.getOrderGiveAwayEligibility = getOrderGiveAwayEligibility;
+// @desc    GiveAway eligibility for many orders (for admin list UI)
+// @route   POST /api/admin/orders/giveaway-eligibility-batch
+// @access  Private/Admin
+const getOrdersGiveAwayEligibilityBatch = async (req, res) => {
+    try {
+        const orderIds = req.body?.orderIds;
+        if (!Array.isArray(orderIds) || orderIds.length === 0) {
+            return res.status(400).json({ message: 'orderIds must be a non-empty array' });
+        }
+        const capped = orderIds.slice(0, 500).map((id) => String(id));
+        const orders = await Order_1.default.find({ _id: { $in: capped } }).lean();
+        const now = new Date();
+        const giveAways = await GiveAway_1.default.find({ isActive: true }).sort({ createdAt: -1 }).lean();
+        const userIds = [...new Set(orders.map((o) => String(o.user)))];
+        const userObjectIds = userIds.map((id) => new mongoose_1.default.Types.ObjectId(id));
+        const startOfToday = new Date(now);
+        startOfToday.setHours(0, 0, 0, 0);
+        const endOfToday = new Date(now);
+        endOfToday.setHours(23, 59, 59, 999);
+        const [ordersTodayAgg, lifetimeAgg, spentAgg] = await Promise.all([
+            Order_1.default.aggregate([
+                { $match: { user: { $in: userObjectIds }, createdAt: { $gte: startOfToday, $lte: endOfToday } } },
+                { $group: { _id: '$user', count: { $sum: 1 } } }
+            ]),
+            Order_1.default.aggregate([
+                { $match: { user: { $in: userObjectIds } } },
+                { $group: { _id: '$user', count: { $sum: 1 } } }
+            ]),
+            Order_1.default.aggregate([
+                { $match: { user: { $in: userObjectIds }, status: { $ne: 'cancelled' } } },
+                { $group: { _id: '$user', total: { $sum: '$totalPrice' } } }
+            ])
+        ]);
+        const statsMap = new Map();
+        for (const uid of userIds) {
+            const oToday = ordersTodayAgg.find((a) => String(a._id) === uid);
+            const life = lifetimeAgg.find((a) => String(a._id) === uid);
+            const sp = spentAgg.find((a) => String(a._id) === uid);
+            statsMap.set(uid, {
+                ordersTodayCount: oToday?.count || 0,
+                lifetimeOrders: life?.count || 0,
+                lifetimeSpent: sp?.total || 0
+            });
+        }
+        const out = {};
+        for (const order of orders) {
+            const id = order._id.toString();
+            if (order.status === 'cancelled') {
+                out[id] = { eligible: false, reason: 'Order is cancelled' };
+                continue;
+            }
+            if (order.giveAwayItems?.length) {
+                out[id] = { eligible: false, reason: 'GiveAway already applied' };
+                continue;
+            }
+            const storeName = (order.storeName || order.nearestStore || '').toString().trim();
+            if (!storeName) {
+                out[id] = { eligible: false, reason: 'Order store is missing' };
+                continue;
+            }
+            const stats = statsMap.get(String(order.user)) || {
+                ordersTodayCount: 0,
+                lifetimeOrders: 0,
+                lifetimeSpent: 0
+            };
+            let matched = null;
+            for (const g of giveAways) {
+                if (!isWithinGiveAwayWindow(g, now))
+                    continue;
+                if (evaluateGiveAwayConditions(order.totalPrice || 0, g, stats)) {
+                    matched = g;
+                    break;
+                }
+            }
+            if (!matched) {
+                out[id] = { eligible: false, reason: 'No matching giveaway conditions' };
+            }
+            else {
+                out[id] = {
+                    eligible: true,
+                    giveAwayId: String(matched._id),
+                    giveAwayTitle: matched.title
+                };
+            }
+        }
+        for (const rid of capped) {
+            if (out[rid] === undefined) {
+                out[rid] = { eligible: false, reason: 'Order not found' };
+            }
+        }
+        return res.json(out);
+    }
+    catch (error) {
+        return res.status(500).json({ message: error.message || 'Failed to check eligibility batch' });
+    }
+};
+exports.getOrdersGiveAwayEligibilityBatch = getOrdersGiveAwayEligibilityBatch;
+// @desc    Apply giveaway items to a specific order (deduct inventory FIFO)
+// @route   POST /api/admin/orders/:id/apply-giveaway
+// @access  Private/Admin
+const applyGiveAwayToOrder = async (req, res) => {
+    try {
+        const order = await Order_1.default.findById(req.params.id);
+        if (!order)
+            return res.status(404).json({ message: 'Order not found' });
+        if (order.status === 'cancelled')
+            return res.status(400).json({ message: 'Cannot apply giveaway to cancelled order' });
+        if (order.giveAwayItems?.length)
+            return res.status(400).json({ message: 'GiveAway already applied' });
+        const { giveAwayId, items } = req.body || {};
+        if (!giveAwayId)
+            return res.status(400).json({ message: 'giveAwayId is required' });
+        if (!Array.isArray(items) || items.length === 0)
+            return res.status(400).json({ message: 'Select at least one product' });
+        const giveAway = await GiveAway_1.default.findById(giveAwayId).lean();
+        if (!giveAway || !giveAway.isActive)
+            return res.status(400).json({ message: 'Invalid giveaway' });
+        const now = new Date();
+        if (!isWithinGiveAwayWindow(giveAway, now))
+            return res.status(400).json({ message: 'GiveAway is not active in this time window' });
+        const userStats = await loadGiveAwayUserStats(order.user, now);
+        if (!evaluateGiveAwayConditions(order.totalPrice || 0, giveAway, userStats)) {
+            return res.status(400).json({ message: 'Order/user not eligible for this giveaway' });
+        }
+        const storeName = (order.storeName || order.nearestStore || '').toString().trim();
+        if (!storeName)
+            return res.status(400).json({ message: 'Order store is missing' });
+        const buildOrderItemFromProduct = (p, selectedVariantIndex, qty) => {
+            const name = (() => {
+                if (p.variants && p.variants.length > 0) {
+                    const v = p.variants[selectedVariantIndex];
+                    if (v)
+                        return `${p.name} (${v.value})`;
+                }
+                return p.name;
+            })();
+            return {
+                product: p._id,
+                name: `${name} (GIVEAWAY)`,
+                image: p.images?.[0] || 'no-image',
+                qty,
+                price: 0,
+                selectedVariantIndex
+            };
+        };
+        // Deduct FIFO from inventory (same logic as checkout)
+        const allocationsPerGiveAwayItem = [];
+        const giveAwayOrderItems = [];
+        for (const it of items) {
+            const qty = Math.floor(Number(it.qty));
+            if (!(qty >= 1)) {
+                return res.status(400).json({ message: 'Each item must have quantity at least 1' });
+            }
+            const product = await Product_1.default.findById(it.productId || it.product);
+            if (!product)
+                return res.status(400).json({ message: 'Invalid product in selection' });
+            const productObj = product.toObject ? product.toObject() : product;
+            if (!isDealOfDayNowForProductInStore(productObj, storeName, now)) {
+                return res.status(400).json({ message: `${product.name} is not in Deal of the Day now for this store` });
+            }
+            const selectedVariantIndex = product.variants?.length ? Number(it.selectedVariantIndex ?? 0) : 0;
+            const inv = product.inventory?.find((i) => i.location?.toLowerCase() === storeName.toLowerCase());
+            if (!inv)
+                return res.status(400).json({ message: `Inventory not found for ${product.name}` });
+            const variants = product.variants || [];
+            const isVariantActive = (i) => variants[i]?.isActive !== false;
+            const getTotalQty = () => {
+                if (!isVariantActive(selectedVariantIndex))
+                    return 0;
+                if (inv.batches?.length) {
+                    return inv.batches
+                        .filter((b) => b.variantIndex === selectedVariantIndex &&
+                        isDealOfDayBatchEligibleForProduct(productObj, b, now))
+                        .reduce((s, b) => s + (b.quantity || 0), 0);
+                }
+                // Without batch window info, we don't allow deal giveaway
+                return 0;
+            };
+            if (getTotalQty() < qty) {
+                return res.status(400).json({ message: `Insufficient stock for ${product.name}` });
+            }
+            const allocations = [];
+            if (inv.batches?.length) {
+                let remaining = qty;
+                const batchesForVariant = inv.batches
+                    .filter((b) => b.variantIndex === selectedVariantIndex &&
+                    isDealOfDayBatchEligibleForProduct(productObj, b, now))
+                    .sort((a, b) => new Date(a.expiryDate).getTime() - new Date(b.expiryDate).getTime());
+                for (const b of batchesForVariant) {
+                    if (remaining <= 0)
+                        break;
+                    const deduct = Math.min(b.quantity, remaining);
+                    // For older batches missing analytics fields, derive them lazily.
+                    if (b.initialQuantity == null) {
+                        b.initialQuantity = Number((b.quantity || 0) + (b.soldQuantity || 0) + (b.giveAwayQuantity || 0));
+                    }
+                    b.quantity -= deduct;
+                    // Track Deal-of-the-day GiveAway impact per batch.
+                    // This allows analytics to show GiveAway Units/Value accurately.
+                    if (deduct > 0) {
+                        b.giveAwayQuantity = Number(b.giveAwayQuantity || 0) + deduct;
+                    }
+                    remaining -= deduct;
+                    if (deduct > 0 && b.batchNumber)
+                        allocations.push({ batchNumber: b.batchNumber, quantity: deduct });
+                }
+                // Do NOT remove depleted batches. Analytics needs the batch objects to still exist
+                // so GiveAway impact can be counted even when Qty Left becomes 0.
+            }
+            else {
+                // No batch info -> deal giveaway not supported
+                return res.status(400).json({ message: `Insufficient deal stock for ${product.name}` });
+            }
+            await product.save();
+            const orderItem = buildOrderItemFromProduct(product, selectedVariantIndex, qty);
+            giveAwayOrderItems.push(orderItem);
+            allocationsPerGiveAwayItem.push(allocations);
+        }
+        // attach allocations
+        giveAwayOrderItems.forEach((gi, idx) => {
+            gi.batchAllocations = allocationsPerGiveAwayItem[idx] || [];
+        });
+        order.giveAwayId = giveAway._id;
+        order.giveAwayItems = giveAwayOrderItems;
+        await order.save();
+        return res.json({ message: 'GiveAway applied', order });
+    }
+    catch (error) {
+        return res.status(500).json({ message: error.message || 'Failed to apply giveaway' });
+    }
+};
+exports.applyGiveAwayToOrder = applyGiveAwayToOrder;
+// @desc    List eligible users/orders for a giveaway (today)
+// @route   GET /api/admin/giveaways/:id/eligible-users
+// @access  Private/Admin
+const getGiveAwayEligibleUsers = async (req, res) => {
+    try {
+        const giveAway = await GiveAway_1.default.findById(req.params.id).lean();
+        if (!giveAway)
+            return res.status(404).json({ message: 'Giveaway not found' });
+        const now = new Date();
+        const startOfToday = new Date(now);
+        startOfToday.setHours(0, 0, 0, 0);
+        const endOfToday = new Date(now);
+        endOfToday.setHours(23, 59, 59, 999);
+        const minOrderAmountCond = (giveAway.conditions || []).find((c) => c.type === 'minOrderAmount' && c.isEnabled !== false);
+        const minOrdersInDayCond = (giveAway.conditions || []).find((c) => c.type === 'minOrdersInDay' && c.isEnabled !== false);
+        const minOrderAmount = minOrderAmountCond ? Number(minOrderAmountCond.value || 0) : 0;
+        const minOrdersInDay = minOrdersInDayCond ? Number(minOrdersInDayCond.value || 0) : 0;
+        // Pull today's orders (exclude cancelled)
+        const todaysOrders = await Order_1.default.find({
+            createdAt: { $gte: startOfToday, $lte: endOfToday },
+            status: { $ne: 'cancelled' }
+        })
+            .populate('user', 'username email')
+            .sort({ createdAt: -1 })
+            .lean();
+        // Group by user
+        const byUser = new Map();
+        for (const o of todaysOrders) {
+            const uid = (o.user?._id || o.user)?.toString?.() || '';
+            if (!uid)
+                continue;
+            if (!byUser.has(uid))
+                byUser.set(uid, []);
+            byUser.get(uid).push(o);
+        }
+        const result = [];
+        for (const [uid, orders] of byUser.entries()) {
+            const orderCount = orders.length;
+            const hasBigOrder = minOrderAmount > 0 ? orders.some(o => Number(o.totalPrice || 0) >= minOrderAmount) : true;
+            const hasDailyCount = minOrdersInDay > 0 ? orderCount >= minOrdersInDay : true;
+            if (hasBigOrder && hasDailyCount) {
+                const user = orders[0].user;
+                result.push({
+                    user: {
+                        _id: user?._id?.toString?.() || uid,
+                        username: user?.username,
+                        email: user?.email
+                    },
+                    todayOrderCount: orderCount,
+                    eligibleOrders: orders
+                        .filter(o => (minOrderAmount > 0 ? Number(o.totalPrice || 0) >= minOrderAmount : true))
+                        .slice(0, 5)
+                        .map(o => ({
+                        _id: o._id,
+                        totalPrice: o.totalPrice,
+                        createdAt: o.createdAt,
+                        status: o.status,
+                        deliveryMode: o.deliveryMode
+                    }))
+                });
+            }
+        }
+        return res.json({ giveAwayId: giveAway._id, count: result.length, users: result });
+    }
+    catch (error) {
+        return res.status(500).json({ message: error.message || 'Failed to fetch eligible users' });
+    }
+};
+exports.getGiveAwayEligibleUsers = getGiveAwayEligibleUsers;
 // @desc    Update delivery settings
 // @route   PUT /api/admin/delivery-settings
 // @access  Private/Admin
 const updateDeliverySettings = async (req, res) => {
     try {
-        const { pricePerKm, baseCharge, freeDeliveryThreshold, storeLocations } = req.body;
+        const { pricePerKm, baseCharge, freeDeliveryThreshold, gstPercentage, // 🔥 NEW FIELD
+        storeLocations } = req.body;
+        // 🔥 0️⃣ Validate GST
+        if (typeof gstPercentage !== 'number' || gstPercentage < 0 || gstPercentage > 100) {
+            return res.status(400).json({
+                message: "GST percentage must be a number between 0 and 100"
+            });
+        }
         // 1️⃣ Basic validation
         if (!Array.isArray(storeLocations) || storeLocations.length === 0) {
             return res.status(400).json({
@@ -983,38 +1959,38 @@ const updateDeliverySettings = async (req, res) => {
                 message: "At least one store must be active"
             });
         }
-        // 3️⃣ Validate each store (NO storeId validation - it's auto-generated!)
+        // 3️⃣ Validate each store
         for (let i = 0; i < storeLocations.length; i++) {
             const store = storeLocations[i];
             const storeNum = i + 1;
-            if (!store.name || !store.name.trim()) {
+            if (!store.name?.trim()) {
                 return res.status(400).json({
                     message: `Store ${storeNum}: Store name is required`
                 });
             }
-            if (!store.contact_number || !store.contact_number.trim()) {
+            if (!store.contact_number?.trim()) {
                 return res.status(400).json({
                     message: `Store ${storeNum}: Contact number is required`
                 });
             }
-            if (!store.address || !store.address.trim()) {
+            if (!store.address?.trim()) {
                 return res.status(400).json({
                     message: `Store ${storeNum}: Address is required`
                 });
             }
-            if (!store.city || !store.city.trim()) {
+            if (!store.city?.trim()) {
                 return res.status(400).json({
                     message: `Store ${storeNum}: City is required`
                 });
             }
             if (typeof store.latitude !== 'number') {
                 return res.status(400).json({
-                    message: `Store ${storeNum}: Valid latitude is required (received: ${typeof store.latitude})`
+                    message: `Store ${storeNum}: Valid latitude is required`
                 });
             }
             if (typeof store.longitude !== 'number') {
                 return res.status(400).json({
-                    message: `Store ${storeNum}: Valid longitude is required (received: ${typeof store.longitude})`
+                    message: `Store ${storeNum}: Valid longitude is required`
                 });
             }
             if (store.latitude < -90 || store.latitude > 90) {
@@ -1028,27 +2004,24 @@ const updateDeliverySettings = async (req, res) => {
                 });
             }
         }
-        // 4️⃣ Process store locations - ensure storeId is generated for new stores
-        const processedStores = storeLocations.map((store) => {
-            // If store already has a storeId (from DB), keep it
-            // Otherwise, a new one will be auto-generated by Mongoose
-            return {
-                ...(store.storeId && { storeId: store.storeId }), // Keep existing storeId if present
-                name: store.name.trim(),
-                contact_number: store.contact_number.trim(),
-                address: store.address.trim(),
-                city: store.city.trim(),
-                latitude: store.latitude,
-                longitude: store.longitude,
-                isActive: store.isActive
-            };
-        });
+        // 4️⃣ Process store locations
+        const processedStores = storeLocations.map((store) => ({
+            ...(store.storeId && { storeId: store.storeId }),
+            name: store.name.trim(),
+            contact_number: store.contact_number.trim(),
+            address: store.address.trim(),
+            city: store.city.trim(),
+            latitude: store.latitude,
+            longitude: store.longitude,
+            isActive: store.isActive
+        }));
         // 5️⃣ Create or Update settings
         let settings = await DeliverySettings_1.default.findOne();
         if (settings) {
             settings.pricePerKm = pricePerKm;
             settings.baseCharge = baseCharge;
             settings.freeDeliveryThreshold = freeDeliveryThreshold;
+            settings.gstPercentage = gstPercentage; // 🔥 SAVE GST
             settings.storeLocations = processedStores;
             await settings.save();
         }
@@ -1057,13 +2030,13 @@ const updateDeliverySettings = async (req, res) => {
                 pricePerKm,
                 baseCharge,
                 freeDeliveryThreshold,
+                gstPercentage, // 🔥 ADD GST HERE
                 storeLocations: processedStores
             });
         }
         res.json(settings);
     }
     catch (error) {
-        // Handle Mongoose validation errors
         if (error.name === 'ValidationError') {
             const validationErrors = Object.values(error.errors).map((err) => err.message);
             return res.status(400).json({
@@ -1077,3 +2050,119 @@ const updateDeliverySettings = async (req, res) => {
     }
 };
 exports.updateDeliverySettings = updateDeliverySettings;
+// @desc    Generate invoice for an order (Admin)
+// @route   GET /api/admin/orders/:id/invoice
+// @access  Private/Admin
+const getAdminInvoice = async (req, res) => {
+    try {
+        const order = await Order_1.default.findById(req.params.id)
+            .populate('user', 'username email')
+            .exec();
+        if (!order) {
+            return res.status(404).json({ message: 'Order not found' });
+        }
+        // Admin does not need an ownership check for invoices
+        const doc = new pdfkit_1.default({ margin: 30 }); // Smaller margin for better fit
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename="invoice-${order._id}.pdf"`);
+        doc.pipe(res);
+        // Company Header
+        doc.image(path_1.default.join(__dirname, '../assets/IndiasFood.png'), doc.page.width - 150, 30, { width: 120 });
+        doc.fontSize(16).font('Helvetica-Bold').text(`INDIA'S FOOD`, 30, 50);
+        doc.fontSize(10).font('Helvetica').text('A Unit of Maha Food', 30, 70);
+        doc.fontSize(12).font('Helvetica-Bold').text(`India's True Taste`, 30, 85);
+        doc.fontSize(9).font('Helvetica').text('Prasanth Layout, Prasanth Extension,', 30, 105);
+        doc.text('Whitefield, Bengaluru, Karnataka 560066', 30, 117);
+        doc.text('Ph: 9902312314', 30, 129);
+        doc.text('Website: www.indiasfood.com', 30, 141);
+        doc.text('GSTIN: 29ACCFM2331G1ZG', 30, 153);
+        doc.moveDown(2);
+        // Order Details - align right
+        doc.fontSize(10).font('Helvetica').text('Order No :', 300, 170, { width: 100, align: 'right' });
+        doc.font('Helvetica-Bold').text('INV-1001', 400, 170, { width: 150, align: 'right' }); // Assuming static INV-1001 for now
+        const orderDate = order.createdAt
+            ? new Date(order.createdAt).toLocaleDateString('en-IN')
+            : 'N/A';
+        doc.font('Helvetica').text('Date :', 300, 185, { width: 100, align: 'right' });
+        doc.font('Helvetica-Bold').text(orderDate, 400, 185, { width: 150, align: 'right' });
+        doc.moveDown(3);
+        // Items table header
+        const tableTop = doc.y;
+        const itemX = 30;
+        const qtyX = 300;
+        const amtX = 450;
+        doc.font('Helvetica-Bold')
+            .text('Item', itemX, tableTop, { width: 250 })
+            .text('Qty', qtyX, tableTop, { width: 50, align: 'right' })
+            .text('Amt', amtX, tableTop, { width: 100, align: 'right' });
+        doc.moveDown(0.5);
+        doc.moveTo(itemX, doc.y).lineTo(doc.page.width - 30, doc.y).stroke();
+        doc.moveDown(0.5);
+        // Items table rows
+        doc.font('Helvetica');
+        order.orderItems.forEach((item) => {
+            const itemTotalPrice = (item.qty * item.price);
+            doc.text(item.name, itemX, doc.y, { width: 250 })
+                .text(item.qty.toFixed(3), qtyX, doc.y, { width: 50, align: 'right' }) // Display Qty with 3 decimal places
+                .text(itemTotalPrice.toFixed(2), amtX, doc.y, { width: 100, align: 'right' });
+            doc.moveDown(0.5);
+        });
+        const giveAwayItems = order.giveAwayItems || [];
+        if (Array.isArray(giveAwayItems) && giveAwayItems.length > 0) {
+            doc.moveDown(0.3);
+            doc
+                .font('Helvetica-Bold')
+                .text('GiveAway — Deal of the Day (complimentary)', itemX, doc.y, { width: 400 });
+            doc.moveDown(0.3);
+            doc.font('Helvetica');
+            giveAwayItems.forEach((item) => {
+                doc.text(item.name, itemX, doc.y, { width: 250 })
+                    .text(Number(item.qty || 0).toFixed(3), qtyX, doc.y, { width: 50, align: 'right' })
+                    .text('0.00', amtX, doc.y, { width: 100, align: 'right' });
+                doc.moveDown(0.5);
+            });
+        }
+        doc.moveDown(0.5);
+        doc.moveTo(itemX, doc.y).lineTo(doc.page.width - 30, doc.y).stroke();
+        doc.moveDown(0.5);
+        // Totals
+        const subtotal = order.totalPrice - order.shippingPrice - order.taxPrice;
+        doc.font('Helvetica')
+            .text('Sub Total', amtX - 150, doc.y, { width: 100, align: 'right' })
+            .text(subtotal.toFixed(2), amtX, doc.y, { width: 100, align: 'right' });
+        doc.moveDown(0.3);
+        // Assuming a fixed GST of 5% for display purposes from the image,
+        // though the actual order.taxPrice might be different in calculation.
+        // If order.taxPrice represents GST, use that instead.
+        // For now, matching the image:
+        const gstAmount = 50.00; // From the image provided
+        doc.text('GST 5 %', amtX - 150, doc.y, { width: 100, align: 'right' })
+            .text(gstAmount.toFixed(2), amtX, doc.y, { width: 100, align: 'right' });
+        doc.moveDown(0.3);
+        if (order.shippingPrice > 0) {
+            doc.text('Delivery Charges', amtX - 150, doc.y, { width: 100, align: 'right' })
+                .text(order.shippingPrice.toFixed(2), amtX, doc.y, { width: 100, align: 'right' });
+            doc.moveDown(0.3);
+        }
+        doc.moveDown(0.5);
+        doc.font('Helvetica-Bold')
+            .text('TOTAL', amtX - 150, doc.y, { width: 100, align: 'right' })
+            .text(order.totalPrice.toFixed(2), amtX, doc.y, { width: 100, align: 'right' });
+        doc.moveDown(2);
+        // Payment Mode
+        doc.font('Helvetica-Bold').text('Payment Mode : CASH / UPI / CARD', 30, doc.y);
+        doc.moveDown(3);
+        // Footer message
+        doc.fontSize(10).font('Helvetica-Bold').text('More sweetness awaits you – come back soon!', 30, doc.y, { align: 'center' });
+        doc.fontSize(10).font('Helvetica').text('Shop online in Indiasfood.com', 30, doc.y + 15, { align: 'center' });
+        doc.end();
+    }
+    catch (error) {
+        console.error('❌ Get admin invoice error:', error);
+        res.status(500).json({
+            message: 'Failed to generate invoice',
+            error: error.message,
+        });
+    }
+};
+exports.getAdminInvoice = getAdminInvoice;

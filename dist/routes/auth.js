@@ -13,4 +13,11 @@ router.get('/profile', auth_1.protect, authController_1.getUserProfile);
 // router.post('/forgot-password', forgotPassword);
 // router.post('/verify-otp', verifyOTP);
 // router.post('/reset-password', resetPassword);
+//SMS
+router.route('/send-otp').post(authController_1.sendPhoneOtp);
+router.route('/verify-otp').post(authController_1.verifyPhoneOtp);
+// Login with OTP (passwordless login)
+router.post('/login-with-otp', authController_1.loginWithOtp);
+// Reset password (after OTP verification)
+router.post('/reset-password', authController_1.resetPassword);
 exports.default = router;
