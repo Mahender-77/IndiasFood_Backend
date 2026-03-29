@@ -12,12 +12,17 @@ const routes_1 = __importDefault(require("./routes"));
 (0, db_1.default)();
 const app = (0, express_1.default)();
 app.use(express_1.default.json());
+// CORS configuration - must be before routes
 app.use((0, cors_1.default)({
-    origin: process.env.BASE_URL,
+    origin: [
+        process.env.BASE_URL,
+        process.env.BASE_URL1,
+        `http://localhost:5173`
+    ].filter(Boolean),
     credentials: true,
 }));
 app.use('/api', routes_1.default);
-app.use('/', (req, res) => {
+app.use('/heakth', (req, res) => {
     res.send('server is running');
 });
 // error handler

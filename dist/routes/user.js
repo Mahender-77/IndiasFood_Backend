@@ -9,7 +9,7 @@ const userController_1 = require("../controllers/userController");
 const router = express_1.default.Router();
 // Cart routes
 router.route('/cart').get(auth_1.protect, userController_1.getUserCart).post(auth_1.protect, userController_1.updateCart);
-router.route('/cart/merge').post(auth_1.protect, userController_1.mergeCart);
+router.route('/cart/merge').post(userController_1.mergeCart);
 // Wishlist routes
 router.route('/wishlist').get(auth_1.protect, userController_1.getUserWishlist).post(auth_1.protect, userController_1.toggleWishlist);
 //Address
@@ -24,6 +24,7 @@ router.route('/orders').get(auth_1.protect, userController_1.getUserOrders);
 router.route('/orders/:id').get(auth_1.protect, userController_1.getOrderById);
 router.route('/orders/:id/cancel').put(auth_1.protect, userController_1.cancelOrder);
 router.route('/orders/:id/track').get(auth_1.protect, userController_1.trackOrderStatus);
+router.route('/orders/:id/invoice').get(auth_1.protect, userController_1.getUserInvoice);
 // Store locations
 router.route('/delivery-settings').get(userController_1.getDeliverySettings);
 // Geocoding routes
@@ -33,5 +34,6 @@ router.route('/geocode-address').get(userController_1.geocodeAddress);
 // Get user UEngage
 router.route('/check-availability').post(userController_1.checkAvailability);
 // Newsletter subscription
-router.route('/newsletter/subscribe').post(userController_1.subscribeNewsletter);
+router.post('/newsletter/subscribe', auth_1.protect, // your auth middleware
+userController_1.subscribeNewsletter);
 exports.default = router;

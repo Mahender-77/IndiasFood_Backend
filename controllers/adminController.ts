@@ -5,17 +5,33 @@ import mongoose from 'mongoose';
 import path from 'path';
 import Category from '../models/Category'; // Import Category model
 import DeliverySettings from '../models/DeliverySettings';
+import GiveAway from '../models/GiveAway';
 import Order, { OrderDocument } from '../models/Order';
 import Product from '../models/Product';
 import User from '../models/User'; // Import User model
 import PDFDocument from 'pdfkit'; // Import pdfkit
 
-import { createCategorySchema, createProductSchema, updateCategorySchema, updateOrderDeliverySchema, updateOrderStatusSchema, updateProductSchema } from '../utils/adminValidation';
+import { addBatchesSchema, createCategorySchema, createProductBasicSchema, createProductSchema, updateCategorySchema, updateOrderDeliverySchema, updateOrderStatusSchema, updateProductSchema } from '../utils/adminValidation';
 
 interface AuthenticatedRequest extends Request {
   user?: any; // Define a more specific User type if available
   files?: Express.Multer.File[]; // Add files property for Multer (after @types/multer install)
 }
+
+const NEW_ARRIVAL_DAYS = 4;
+
+const expireOldNewArrivalFlags = async () => {
+  const cutoffDate = new Date(Date.now() - NEW_ARRIVAL_DAYS * 24 * 60 * 60 * 1000);
+  await Product.updateMany(
+    {
+      isNewArrival: true,
+      createdAt: { $lt: cutoffDate }
+    },
+    {
+      $set: { isNewArrival: false }
+    }
+  );
+};
 
 
 // @desc    Get all orders
@@ -57,7 +73,6 @@ export const createProduct = async (
     originalPrice,
     offerPrice,
     variants,
-    shelfLife,
     category,
     inventory,
     videoUrl,
@@ -66,7 +81,9 @@ export const createProduct = async (
     isGITagged,
     isNewArrival,
     store,
-    originLocation 
+    originLocation,
+    dealTriggerDays,
+    dealDiscountPercent
   } = req.body;
 
   try {
@@ -107,22 +124,19 @@ export const createProduct = async (
 
     // ---------------- SAFETY: INVENTORY DEFAULT ----------------
 
-    const safeInventory = Array.isArray(inventory)
-      ? inventory
-      : [];
-
+    const safeInventory = Array.isArray(inventory) ? inventory : [];
     const safeVariants =
-      Array.isArray(variants) && variants.length > 0
-        ? variants
-        : [];
+      Array.isArray(variants) && variants.length > 0 ? variants : [];
 
-    // If NO variants → force variantIndex = 0
+    // If NO variants → force variantIndex = 0 for batches and stock
     if (safeVariants.length === 0) {
-      safeInventory.forEach((location: any) => {
-        location.stock = location.stock?.map((s: any) => ({
-          ...s,
-          variantIndex: 0
-        }));
+      safeInventory.forEach((loc: any) => {
+        if (loc.batches?.length) {
+          loc.batches = loc.batches.map((b: any) => ({ ...b, variantIndex: 0 }));
+        }
+        if (loc.stock?.length) {
+          loc.stock = loc.stock.map((s: any) => ({ ...s, variantIndex: 0 }));
+        }
       });
     }
 
@@ -138,14 +152,15 @@ export const createProduct = async (
       offerPrice:
         safeVariants.length === 0 ? offerPrice : undefined,
       variants: safeVariants,
-      shelfLife: shelfLife !== undefined && shelfLife !== null ? Number(shelfLife) : undefined,
       category,
       inventory: safeInventory,
       videoUrl: videoUrl?.trim() || '',
       images: images || [],
       isActive: isActive ?? true,
       isGITagged: isGITagged || false,
-      isNewArrival: isNewArrival || false
+      isNewArrival: isNewArrival || false,
+      dealTriggerDays: dealTriggerDays != null ? Number(dealTriggerDays) : undefined,
+      dealDiscountPercent: dealDiscountPercent != null ? Number(dealDiscountPercent) : undefined
     });
 
     const savedProduct = await product.save();
@@ -244,8 +259,13 @@ export const adminUpdateOrderStatus = async (req: Request, res: Response) => {
         }
       }
 
-      /* 📦 RESTORE STOCK */
-      for (const item of order.orderItems) {
+      /* 📦 RESTORE STOCK (including giveaway items) */
+      const allItemsToRestore = [
+        ...(order.orderItems || []),
+        ...(((order as any).giveAwayItems as any[]) || [])
+      ];
+
+      for (const item of allItemsToRestore) {
         const product = await Product.findById(item.product);
         if (!product) continue;
 
@@ -263,12 +283,35 @@ export const adminUpdateOrderStatus = async (req: Request, res: Response) => {
 
         if (!inventoryLocation) continue;
 
-        const stockItem = inventoryLocation.stock.find(
-          s => s.variantIndex === variantIndex
-        );
-
-        if (stockItem) {
-          stockItem.quantity += item.qty;
+        if (Array.isArray(inventoryLocation.batches)) {
+          const now = new Date();
+          (inventoryLocation as any).batches = inventoryLocation.batches || [];
+          (inventoryLocation as any).batches.push({
+            batchNumber: `RETURN-${Date.now()}`,
+            quantity: item.qty,
+            initialQuantity: item.qty,
+            soldQuantity: 0,
+            revenue: 0,
+            giveAwayQuantity: 0,
+            manufacturingDate: now,
+            expiryDate: new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000),
+            purchasePrice: 0,
+            sellingPrice: 0,
+            variantIndex
+          });
+        } else if (Array.isArray(inventoryLocation.stock)) {
+          const stockItem = inventoryLocation.stock.find(
+            (s: any) => s.variantIndex === variantIndex
+          );
+          if (stockItem) {
+            stockItem.quantity += item.qty;
+          } else {
+            (inventoryLocation as any).stock.push({
+              variantIndex,
+              quantity: item.qty,
+              lowStockThreshold: 5
+            });
+          }
         }
 
         await product.save();
@@ -352,7 +395,7 @@ export const updateProduct = async (req: AuthenticatedRequest, res: Response) =>
   const { error } = updateProductSchema.validate(req.body);
   if (error) return res.status(400).json({ message: error.details[0].message });
 
-  const { name, description, originalPrice, offerPrice, variants, shelfLife, category, inventory, videoUrl, images, isActive, isGITagged, isNewArrival } = req.body;
+  const { name, description, originalPrice, offerPrice, variants, category, inventory, videoUrl, images, isActive, isGITagged, isNewArrival } = req.body;
 
   try {
     const product = await Product.findById(req.params.id);
@@ -374,7 +417,6 @@ export const updateProduct = async (req: AuthenticatedRequest, res: Response) =>
     product.description = description !== undefined ? description : product.description;
     product.originalPrice = originalPrice !== undefined ? originalPrice : product.originalPrice;
     product.offerPrice = offerPrice !== undefined ? offerPrice : product.offerPrice;
-    product.shelfLife = shelfLife !== undefined && shelfLife !== null ? Number(shelfLife) : product.shelfLife;
     product.category = category || product.category;
     product.videoUrl = videoUrl !== undefined ? videoUrl : product.videoUrl;
     product.images = images !== undefined ? images : product.images;
@@ -923,6 +965,8 @@ export const getRevenueToday = async (req: AuthenticatedRequest, res: Response) 
 
 export const getAllProducts = async (req: AuthenticatedRequest, res: Response) => {
   try {
+    await expireOldNewArrivalFlags();
+
     const products = await Product.find()
       .populate('category')
       .sort({ createdAt: -1 })
@@ -969,76 +1013,166 @@ const validateUpdateProduct = (req: Request, res: Response, next: NextFunction) 
   next();
 };
 
-// POST /api/admin/inventory/products - Create new product
+// POST /api/admin/inventory/create-product - Step 1: Basic product only (no store, price, deal - those come with batches)
 export const createInventoryProduct = async (req: Request, res: Response) => {
+  const { error } = createProductBasicSchema.validate(req.body);
+  if (error) {
+    return res.status(400).json({ message: error.details[0].message });
+  }
+
+  const data = req.body;
+
   try {
-    const productData = req.body;
-
-    /* ---------- BASIC VALIDATION ---------- */
-
-    if (!productData.name?.trim()) {
-      return res.status(400).json({ message: 'Product name is required' });
+    const categoryExists = await Category.findById(data.category);
+    if (!categoryExists) {
+      return res.status(400).json({ message: 'Invalid category ID' });
     }
-
-    if (!productData.category) {
-      return res.status(400).json({ message: 'Category is required' });
-    }
-
-    if (!productData.store) {
-      return res.status(400).json({ message: 'Store ID is required' });
-    }
-
-    if (!mongoose.Types.ObjectId.isValid(productData.store)) {
-      return res.status(400).json({ message: 'Invalid store ID' });
-    }
-
-    /* ---------- VERIFY STORE EXISTS (storeLocations.storeId) ---------- */
-
-    const storeExists = await DeliverySettings.exists({
-      storeLocations: {
-        $elemMatch: {
-          storeId: productData.store,
-          isActive: true // optional but recommended
-        }
-      }
-    });
-
-    if (!storeExists) {
-      return res.status(400).json({ message: 'Store not found or inactive' });
-    }
-
-    /* ---------- PRICE VALIDATION ---------- */
-
-    if (
-      (!productData.variants || productData.variants.length === 0) &&
-      (productData.originalPrice === undefined || productData.originalPrice <= 0)
-    ) {
-      return res.status(400).json({
-        message: 'Original price is required for non-variant products'
-      });
-    }
-
-    /* ---------- CREATE PRODUCT ---------- */
 
     const product = new Product({
-      ...productData,
-      store: productData.store // 🔒 enforce store explicitly
+      name: data.name.trim(),
+      description: data.description?.trim() || '',
+      category: data.category,
+      subcategory: data.subcategory || undefined,
+      videoUrl: data.videoUrl?.trim() || '',
+      images: data.images || [],
+      originLocation: data.originLocation?.trim().toLowerCase() || undefined,
+      isGITagged: data.isGITagged ?? false,
+      isNewArrival: data.isNewArrival ?? false,
+      isMostSaled: data.isMostSaled ?? false,
+      isActive: data.isActive ?? true,
+      variants: [],
+      inventory: [],
     });
 
     await product.save();
     await product.populate('category');
 
-    return res.status(201).json(product);
+    return res.status(201).json({ message: 'Product created', product });
   } catch (error: any) {
     console.error('Error creating product:', error);
-
     if (error.name === 'ValidationError') {
       return res.status(400).json({
         message: 'Validation failed',
         errors: Object.values(error.errors).map((e: any) => e.message)
       });
     }
+    return res.status(500).json({ message: error.message });
+  }
+};
 
+// PUT /api/admin/inventory/:productId/batches - Step 2/3: Add variants + batches
+// Supports both with-variant and without-variant product creation; does not alter variant flow.
+export const addBatches = async (req: Request, res: Response) => {
+  const { error } = addBatchesSchema.validate(req.body);
+  if (error) {
+    return res.status(400).json({ message: error.details[0].message });
+  }
+
+  const productId = req.params.id;
+  const { store, originalPrice, offerPrice, addVariants, batches } = req.body;
+
+  try {
+    if (!mongoose.Types.ObjectId.isValid(productId)) {
+      return res.status(400).json({ message: 'Invalid product ID' });
+    }
+    if (!mongoose.Types.ObjectId.isValid(store)) {
+      return res.status(400).json({ message: 'Invalid store ID' });
+    }
+    const storeExists = await DeliverySettings.exists({
+      storeLocations: { $elemMatch: { storeId: store, isActive: true } }
+    });
+    if (!storeExists) {
+      return res.status(400).json({ message: 'Store not found or inactive' });
+    }
+
+    const product = await Product.findById(productId);
+    if (!product) return res.status(404).json({ message: 'Product not found' });
+
+    product.store = store;
+    if (originalPrice != null) product.originalPrice = Number(originalPrice);
+    if (offerPrice != null) product.offerPrice = Number(offerPrice);
+
+    if (addVariants && addVariants.length > 0) {
+      if (!product.variants) product.variants = [];
+      for (const v of addVariants) {
+        product.variants.push({
+          type: v.type,
+          value: v.value,
+          originalPrice: v.originalPrice,
+          offerPrice: v.offerPrice
+        });
+      }
+    }
+
+    const variantCount = Math.max(1, product.variants?.length ?? 0);
+    const maxVariantIndex = variantCount - 1;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    // Build a fresh inventory array so Mongoose reliably persists (avoid in-place nested push)
+    const locationMap = new Map<string, { location: string; batches: any[]; stock: any[] }>();
+
+    // Copy existing inventory into the map (preserve existing batches/stock)
+    const existingInventory = Array.isArray(product.inventory) ? product.inventory : [];
+    for (const inv of existingInventory) {
+      const locName = String((inv as any).location || '').trim().toLowerCase();
+      if (!locName) continue;
+      locationMap.set(locName, {
+        location: locName,
+        batches: Array.isArray((inv as any).batches) ? (inv as any).batches.map((b: any) => ({ ...b })) : [],
+        stock: Array.isArray((inv as any).stock) ? (inv as any).stock.map((s: any) => ({ ...s })) : []
+      });
+    }
+
+    // Add each new batch to the correct location
+    for (const b of batches) {
+      const variantIndex = b.variantIndex ?? 0;
+      if (variantIndex < 0 || variantIndex > maxVariantIndex) {
+        return res.status(400).json({ message: `variantIndex must be 0-${maxVariantIndex}` });
+      }
+      const expiryDate = new Date(b.expiryDate);
+      expiryDate.setHours(0, 0, 0, 0);
+      if (expiryDate <= today) {
+        return res.status(400).json({ message: 'Cannot add expired batch' });
+      }
+
+      const locName = String(b.location).trim().toLowerCase();
+      if (!locName) continue;
+
+      let entry = locationMap.get(locName);
+      if (!entry) {
+        entry = { location: locName, batches: [], stock: [] };
+        locationMap.set(locName, entry);
+      }
+      entry.batches.push({
+        batchNumber: b.batchNumber,
+        quantity: Number(b.quantity),
+        // Track original quantity for analytics inference.
+        initialQuantity: Number(b.quantity),
+        soldQuantity: 0,
+        revenue: 0,
+        giveAwayQuantity: 0,
+        manufacturingDate: new Date(b.manufacturingDate),
+        expiryDate: new Date(b.expiryDate),
+        purchasePrice: Number(b.purchasePrice),
+        sellingPrice: Number(b.sellingPrice),
+        variantIndex,
+        batchWholePrice: b.batchWholePrice != null && Number(b.batchWholePrice) >= 0 ? Number(b.batchWholePrice) : undefined,
+        dealTriggerDays: b.dealTriggerDays != null ? Number(b.dealTriggerDays) : undefined,
+        dealDiscountPercent: b.dealDiscountPercent != null ? Number(b.dealDiscountPercent) : undefined,
+      });
+    }
+
+    // Replace product.inventory with the new array so Mongoose persists it
+    product.inventory = Array.from(locationMap.values());
+    product.markModified('inventory');
+    product.markModified('variants');
+    await product.save();
+
+    const updated = await Product.findById(productId).populate('category').lean({ virtuals: true });
+    return res.status(200).json({ message: 'Batches added', product: updated });
+  } catch (error: any) {
+    console.error('Error adding batches:', error);
     return res.status(500).json({ message: error.message });
   }
 };
@@ -1068,86 +1202,156 @@ export const updateInventoryProduct = async (req: Request, res: Response) => {
 };
 
 
-// PUT /api/admin/inventory/:id/stock - Update specific location stock
+// PUT /api/admin/inventory/:id/stock - Update specific location stock (supports batches & legacy stock)
+// Works for both with-variant and without-variant products; does not alter variant flow.
 export const updateStock = async (req: Request, res: Response) => {
   try {
-    // Validate input parameters
     const { id } = req.params;
-    const { location, variantIndex, quantity } = req.body;
+    const {
+      location,
+      variantIndex: variantIndexRaw,
+      quantity,
+      batchNumber,
+      manufacturingDate,
+      expiryDate,
+      purchasePrice,
+      sellingPrice,
+      batchWholePrice,
+      dealTriggerDays,
+      dealDiscountPercent
+    } = req.body;
 
-    if (!id || !location || typeof variantIndex !== 'number' || typeof quantity !== 'number') {
+    const variantIndex = typeof variantIndexRaw === 'number' ? variantIndexRaw : Number(variantIndexRaw);
+    if (!id || !location || (typeof quantity !== 'number' && (quantity === undefined || quantity === null))) {
       return res.status(400).json({
         message: 'Invalid input parameters',
         required: 'productId, location, variantIndex (number), quantity (number)'
       });
     }
-
-    if (quantity < 0) {
-      return res.status(400).json({ message: 'Quantity cannot be negative' });
+    const qty = Number(quantity);
+    if (Number.isNaN(qty) || qty < 0) {
+      return res.status(400).json({ message: 'Quantity must be a non-negative number' });
     }
 
-    // Check if product exists
     const product = await Product.findById(id);
     if (!product) {
       return res.status(404).json({ message: 'Product not found' });
     }
 
-    // Find if location already exists in inventory
-    const locationIndex = product.inventory?.findIndex(inv => inv.location === location) ?? -1;
-
-    if (locationIndex >= 0) {
-      // Location exists - update or add variant stock
-      const existingLocation = product.inventory![locationIndex];
-      const stockIndex = existingLocation.stock?.findIndex(stock => stock.variantIndex === variantIndex) ?? -1;
-
-      if (stockIndex >= 0) {
-        // Variant stock exists - update quantity
-        existingLocation.stock![stockIndex].quantity = quantity;
-      } else {
-        // Variant stock does not exist - initialize it
-        existingLocation.stock!.push({
-          variantIndex,
-          quantity,
-          lowStockThreshold: 5
-        });
-      }
-
-      // Save the updated product
-      await product.save();
-
-    } else {
-      // Location does NOT exist - create new inventory entry
-      if (!product.inventory) {
-        product.inventory = [];
-      }
-
-      product.inventory.push({
-        location,
-        stock: [{
-          variantIndex,
-          quantity,
-          lowStockThreshold: 5
-        }]
+    const maxVariantIndex = Math.max(0, (product.variants?.length ?? 1) - 1);
+    if (Number.isNaN(variantIndex) || variantIndex < 0 || variantIndex > maxVariantIndex) {
+      return res.status(400).json({
+        message: `variantIndex must be 0-${maxVariantIndex} for this product`
       });
-
-      // Save the updated product
-      await product.save();
     }
+
+    const now = new Date();
+    const defaultExpiry = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+    const variants = product.variants && product.variants.length > 0 ? product.variants : [];
+    const variant = variants[variantIndex];
+    const unitPurchasePrice = typeof purchasePrice === 'number' && purchasePrice >= 0
+      ? purchasePrice
+      : (variant?.originalPrice ?? product.originalPrice ?? product.offerPrice ?? 0);
+    const unitSellingPrice = typeof sellingPrice === 'number' && sellingPrice >= 0
+      ? sellingPrice
+      : (variant?.offerPrice ?? variant?.originalPrice ?? product.offerPrice ?? product.originalPrice ?? 0);
+
+    const useBatches = batchNumber || manufacturingDate || expiryDate;
+    const locName = String(location).trim().toLowerCase();
+    if (!locName) {
+      return res.status(400).json({ message: 'Location is required' });
+    }
+
+    // Build a fresh inventory array so Mongoose persists (same pattern as addBatches)
+    const locationMap = new Map<string, { location: string; batches: any[]; stock: any[] }>();
+    const existingInventory = Array.isArray(product.inventory) ? product.inventory : [];
+    for (const inv of existingInventory) {
+      const name = String((inv as any).location || '').trim().toLowerCase();
+      if (!name) continue;
+      locationMap.set(name, {
+        location: name,
+        batches: Array.isArray((inv as any).batches) ? (inv as any).batches.map((b: any) => ({ ...b })) : [],
+        stock: Array.isArray((inv as any).stock) ? (inv as any).stock.map((s: any) => ({ ...s })) : []
+      });
+    }
+
+    let entry = locationMap.get(locName);
+    if (!entry) {
+      entry = { location: locName, batches: [], stock: [] };
+      locationMap.set(locName, entry);
+    }
+
+    const safeDate = (d: any, fallback: Date) => {
+      if (d == null) return fallback;
+      const t = new Date(d);
+      return isNaN(t.getTime()) ? fallback : t;
+    };
+
+    if (useBatches) {
+      const newBatch = {
+        batchNumber: batchNumber || `BATCH-${Date.now()}`,
+        quantity: qty,
+        initialQuantity: qty,
+        soldQuantity: 0,
+        revenue: 0,
+        giveAwayQuantity: 0,
+        manufacturingDate: safeDate(manufacturingDate, now),
+        expiryDate: safeDate(expiryDate, defaultExpiry),
+        purchasePrice: Number(unitPurchasePrice),
+        sellingPrice: Number(unitSellingPrice),
+        variantIndex,
+        batchWholePrice: batchWholePrice != null && Number(batchWholePrice) >= 0 ? Number(batchWholePrice) : undefined,
+        dealTriggerDays: dealTriggerDays != null && Number(dealTriggerDays) >= 0 ? Number(dealTriggerDays) : undefined,
+        dealDiscountPercent: dealDiscountPercent != null && Number(dealDiscountPercent) >= 0 ? Number(dealDiscountPercent) : undefined
+      };
+      const existingIdx = entry.batches.findIndex(
+        (b: any) => b.batchNumber === newBatch.batchNumber && b.variantIndex === variantIndex
+      );
+      if (existingIdx >= 0) {
+        entry.batches[existingIdx] = newBatch;
+      } else {
+        entry.batches.push(newBatch);
+      }
+      entry.stock = entry.stock.filter((s: any) => s.variantIndex !== variantIndex);
+    } else {
+      entry.batches = entry.batches.filter((b: any) => b.variantIndex !== variantIndex);
+      entry.batches.push({
+        batchNumber: `BATCH-${Date.now()}`,
+        quantity: qty,
+        initialQuantity: qty,
+        soldQuantity: 0,
+        revenue: 0,
+        giveAwayQuantity: 0,
+        manufacturingDate: now,
+        expiryDate: defaultExpiry,
+        purchasePrice: Number(unitPurchasePrice),
+        sellingPrice: Number(unitSellingPrice),
+        variantIndex,
+        batchWholePrice: batchWholePrice != null && Number(batchWholePrice) >= 0 ? Number(batchWholePrice) : undefined,
+        dealTriggerDays: dealTriggerDays != null && Number(dealTriggerDays) >= 0 ? Number(dealTriggerDays) : undefined,
+        dealDiscountPercent: dealDiscountPercent != null && Number(dealDiscountPercent) >= 0 ? Number(dealDiscountPercent) : undefined
+      });
+      const si = entry.stock.findIndex((s: any) => s.variantIndex === variantIndex);
+      if (si >= 0) {
+        entry.stock[si].quantity = qty;
+      } else {
+        entry.stock.push({ variantIndex, quantity: qty, lowStockThreshold: 5 });
+      }
+    }
+
+    product.inventory = Array.from(locationMap.values());
+    product.markModified('inventory');
+    await product.save();
 
     res.json({
       success: true,
-      message: `Stock updated successfully for ${location} (variant ${variantIndex})`,
-      data: {
-        location,
-        variantIndex,
-        quantity
-      }
+      message: `Stock updated for ${locName} (variant ${variantIndex})`,
+      data: { location: locName, variantIndex, quantity: qty }
     });
-
   } catch (error: any) {
     console.error('Error updating stock:', error);
     res.status(500).json({
-      message: 'Failed to update stock',
+      message: error.message || 'Failed to update stock',
       error: error.message
     });
   }
@@ -1264,6 +1468,704 @@ export const getDeliveryLocations = async (req, res) => {
         city: s.city
       }))
   );
+};
+
+// ==================== GIVEAWAY MANAGEMENT ====================
+
+// @desc    Get all giveaways
+// @route   GET /api/admin/giveaways
+// @access  Private/Admin
+export const getGiveAways = async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const items = await GiveAway.find().sort({ createdAt: -1 }).lean();
+    return res.json(items);
+  } catch (error: any) {
+    return res.status(500).json({ message: error.message || 'Failed to fetch giveaways' });
+  }
+};
+
+// @desc    Create giveaway
+// @route   POST /api/admin/giveaways
+// @access  Private/Admin
+export const createGiveAway = async (req: AuthenticatedRequest, res: Response) => {
+  console.log('createGiveAway', req.body);
+  try {
+    const {
+      title,
+      description,
+      isActive,
+      startAt,
+      endAt,
+      conditions,
+      reward
+    } = req.body || {};
+
+    if (!title || !String(title).trim()) {
+      return res.status(400).json({ message: 'Title is required' });
+    }
+    const safeReward = reward && reward.type
+      ? reward
+      : { type: 'other', label: 'Deal-of-the-day giveaway' };
+    if (safeReward.type === 'percentage_discount' && (safeReward.value == null || Number(safeReward.value) > 100)) {
+      return res.status(400).json({ message: 'Percentage discount must be <= 100' });
+    }
+
+    const parsedStartAt = startAt ? new Date(startAt) : undefined;
+    const parsedEndAt = endAt ? new Date(endAt) : undefined;
+    if (parsedStartAt && isNaN(parsedStartAt.getTime())) {
+      return res.status(400).json({ message: 'Invalid startAt date' });
+    }
+    if (parsedEndAt && isNaN(parsedEndAt.getTime())) {
+      return res.status(400).json({ message: 'Invalid endAt date' });
+    }
+    if (parsedStartAt && parsedEndAt && parsedEndAt < parsedStartAt) {
+      return res.status(400).json({ message: 'endAt must be after startAt' });
+    }
+
+    const safeConditions = Array.isArray(conditions) ? conditions : [];
+    const sanitizedConditions = safeConditions
+      .filter((c: any) => c && c.type)
+      .map((c: any) => ({
+        type: c.type,
+        value: Number(c.value) || 0,
+        isEnabled: c.isEnabled !== false
+      }));
+
+    const doc = await GiveAway.create({
+      title: String(title).trim(),
+      description: description ? String(description).trim() : '',
+      isActive: isActive !== false,
+      startAt: parsedStartAt,
+      endAt: parsedEndAt,
+      conditions: sanitizedConditions,
+      reward: {
+        type: safeReward.type,
+        value: safeReward.value != null ? Number(safeReward.value) : undefined,
+        label: safeReward.label ? String(safeReward.label).trim() : undefined,
+        productId: safeReward.productId || undefined
+      },
+      createdBy: req.user?._id
+    });
+
+    return res.status(201).json(doc);
+  } catch (error: any) {
+    return res.status(500).json({ message: error.message || 'Failed to create giveaway' });
+  }
+};
+
+// @desc    Update giveaway
+// @route   PUT /api/admin/giveaways/:id
+// @access  Private/Admin
+export const updateGiveAway = async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const id = req.params.id;
+    const {
+      title,
+      description,
+      isActive,
+      startAt,
+      endAt,
+      conditions,
+      reward
+    } = req.body || {};
+
+    const existing = await GiveAway.findById(id);
+    if (!existing) return res.status(404).json({ message: 'Giveaway not found' });
+
+    if (title != null && !String(title).trim()) {
+      return res.status(400).json({ message: 'Title cannot be empty' });
+    }
+
+    const parsedStartAt = startAt != null ? (startAt ? new Date(startAt) : undefined) : existing.startAt;
+    const parsedEndAt = endAt != null ? (endAt ? new Date(endAt) : undefined) : existing.endAt;
+    if (parsedStartAt && isNaN(parsedStartAt.getTime())) {
+      return res.status(400).json({ message: 'Invalid startAt date' });
+    }
+    if (parsedEndAt && isNaN(parsedEndAt.getTime())) {
+      return res.status(400).json({ message: 'Invalid endAt date' });
+    }
+    if (parsedStartAt && parsedEndAt && parsedEndAt < parsedStartAt) {
+      return res.status(400).json({ message: 'endAt must be after startAt' });
+    }
+
+    if (title != null) existing.title = String(title).trim();
+    if (description != null) existing.description = String(description).trim();
+    if (isActive != null) existing.isActive = Boolean(isActive);
+    if (startAt != null) existing.startAt = parsedStartAt;
+    if (endAt != null) existing.endAt = parsedEndAt;
+
+    if (conditions != null) {
+      const safeConditions = Array.isArray(conditions) ? conditions : [];
+      existing.conditions = safeConditions
+        .filter((c: any) => c && c.type)
+        .map((c: any) => ({
+          type: c.type,
+          value: Number(c.value) || 0,
+          isEnabled: c.isEnabled !== false
+        })) as any;
+      existing.markModified('conditions');
+    }
+
+    if (reward != null) {
+      const safeReward = reward && reward.type
+        ? reward
+        : { type: 'other', label: 'Deal-of-the-day giveaway' };
+      if (safeReward.type === 'percentage_discount' && (safeReward.value == null || Number(safeReward.value) > 100)) {
+        return res.status(400).json({ message: 'Percentage discount must be <= 100' });
+      }
+      existing.reward = {
+        type: safeReward.type,
+        value: safeReward.value != null ? Number(safeReward.value) : undefined,
+        label: safeReward.label ? String(safeReward.label).trim() : undefined,
+        productId: safeReward.productId || undefined
+      } as any;
+      existing.markModified('reward');
+    }
+
+    await existing.save();
+    return res.json(existing);
+  } catch (error: any) {
+    return res.status(500).json({ message: error.message || 'Failed to update giveaway' });
+  }
+};
+
+// @desc    Delete giveaway
+// @route   DELETE /api/admin/giveaways/:id
+// @access  Private/Admin
+export const deleteGiveAway = async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const id = req.params.id;
+    const existing = await GiveAway.findById(id);
+    if (!existing) return res.status(404).json({ message: 'Giveaway not found' });
+    await existing.deleteOne();
+    return res.json({ message: 'Giveaway deleted' });
+  } catch (error: any) {
+    return res.status(500).json({ message: error.message || 'Failed to delete giveaway' });
+  }
+};
+
+// ==================== GIVEAWAY PER-ORDER (Admin) ====================
+
+const isWithinGiveAwayWindow = (g: any, now: Date) => {
+  const s = g.startAt ? new Date(g.startAt) : null;
+  const e = g.endAt ? new Date(g.endAt) : null;
+  if (s && now < s) return false;
+  if (e && now > e) return false;
+  return true;
+};
+
+const getDealOfDayNowForProduct = (product: any, now: Date) => {
+  const currentDate = new Date(now);
+  currentDate.setHours(0, 0, 0, 0);
+  const productTriggerDays = product.dealTriggerDays ?? 0;
+  const productDiscountPercent = product.dealDiscountPercent ?? 0;
+  const inventory = product.inventory || [];
+  for (const loc of inventory) {
+    const batches = loc.batches || [];
+    for (const batch of batches) {
+      const triggerDays = batch.dealTriggerDays ?? productTriggerDays;
+      const batchDiscount = batch.dealDiscountPercent ?? productDiscountPercent;
+      if (triggerDays <= 0 || batchDiscount <= 0) continue;
+      const batchExpiry = new Date(batch.expiryDate);
+      batchExpiry.setHours(0, 0, 0, 0);
+      const dealStartDate = new Date(batchExpiry);
+      dealStartDate.setDate(dealStartDate.getDate() - triggerDays);
+      if (currentDate >= dealStartDate && currentDate <= batchExpiry && (batch.quantity || 0) > 0) {
+        return true;
+      }
+    }
+  }
+  return false;
+};
+
+const isDealOfDayBatchEligibleForProduct = (product: any, batch: any, now: Date) => {
+  const currentDate = new Date(now);
+  currentDate.setHours(0, 0, 0, 0);
+  const productTriggerDays = product.dealTriggerDays ?? 0;
+  const productDiscountPercent = product.dealDiscountPercent ?? 0;
+
+  const triggerDays = batch.dealTriggerDays ?? productTriggerDays;
+  const batchDiscount = batch.dealDiscountPercent ?? productDiscountPercent;
+  if (triggerDays <= 0 || batchDiscount <= 0) return false;
+
+  const batchExpiry = new Date(batch.expiryDate);
+  batchExpiry.setHours(0, 0, 0, 0);
+  const dealStartDate = new Date(batchExpiry);
+  dealStartDate.setDate(dealStartDate.getDate() - triggerDays);
+
+  return (
+    currentDate >= dealStartDate &&
+    currentDate <= batchExpiry &&
+    (batch.quantity || 0) > 0
+  );
+};
+
+const isDealOfDayNowForProductInStore = (product: any, storeName: string, now: Date) => {
+  const inventory = product.inventory || [];
+  const store = storeName.toLowerCase();
+
+  for (const loc of inventory) {
+    if ((loc.location || '').toLowerCase() !== store) continue;
+    const batches = loc.batches || [];
+    for (const batch of batches) {
+      if (isDealOfDayBatchEligibleForProduct(product, batch, now)) return true;
+    }
+  }
+  return false;
+};
+
+const getDealEligibleQtyByVariantIndexAtStore = (product: any, storeName: string, now: Date): number[] => {
+  const variants = product.variants || [];
+  const maxVariants = Math.max(1, variants.length);
+  const res = Array.from({ length: maxVariants }, () => 0);
+
+  const isVariantActive = (i: number) => (variants[i] as any)?.isActive !== false;
+
+  const inventory = product.inventory || [];
+  const inv = inventory.find((i: any) => (i.location || '').toLowerCase() === storeName.toLowerCase());
+  if (!inv) return res;
+  const batches = inv.batches || [];
+  if (!batches.length) return res; // without batch info, we can't reliably calculate deal window quantity
+
+  for (const b of batches) {
+    const vi = Number(b.variantIndex ?? 0);
+    if (vi < 0 || vi >= maxVariants) continue;
+    if (!isVariantActive(vi)) continue;
+    if (!isDealOfDayBatchEligibleForProduct(product, b, now)) continue;
+    res[vi] += b.quantity || 0;
+  }
+  return res;
+};
+
+type GiveAwayUserStats = {
+  ordersTodayCount: number;
+  lifetimeOrders: number;
+  lifetimeSpent: number;
+};
+
+const loadGiveAwayUserStats = async (userId: any, now: Date): Promise<GiveAwayUserStats> => {
+  const startOfToday = new Date(now);
+  startOfToday.setHours(0, 0, 0, 0);
+  const endOfToday = new Date(now);
+  endOfToday.setHours(23, 59, 59, 999);
+
+  const [ordersTodayCount, lifetimeOrders, spentAgg] = await Promise.all([
+    Order.countDocuments({
+      user: userId,
+      createdAt: { $gte: startOfToday, $lte: endOfToday }
+    }),
+    Order.countDocuments({ user: userId }),
+    Order.aggregate([
+      { $match: { user: userId, status: { $ne: 'cancelled' } } },
+      { $group: { _id: null, total: { $sum: '$totalPrice' } } }
+    ])
+  ]);
+  const lifetimeSpent = spentAgg?.[0]?.total || 0;
+  return { ordersTodayCount, lifetimeOrders, lifetimeSpent };
+};
+
+/** Sync evaluation using preloaded user stats (for batch eligibility). */
+const evaluateGiveAwayConditions = (orderTotal: number, giveAwayDoc: any, stats: GiveAwayUserStats) => {
+  const enabledConditions = (giveAwayDoc.conditions || []).filter((c: any) => c && c.isEnabled !== false);
+  for (const c of enabledConditions) {
+    if (c.type === 'minOrderAmount') {
+      if (orderTotal < Number(c.value || 0)) return false;
+    }
+    if (c.type === 'minOrdersInDay') {
+      if (stats.ordersTodayCount < Number(c.value || 0)) return false;
+    }
+    if (c.type === 'minLifetimeOrders') {
+      if (stats.lifetimeOrders < Number(c.value || 0)) return false;
+    }
+    if (c.type === 'minLifetimeSpent') {
+      if (stats.lifetimeSpent < Number(c.value || 0)) return false;
+    }
+  }
+  return true;
+};
+
+// @desc    Check if order is eligible for any giveaway & list Deal-of-the-Day products
+// @route   GET /api/admin/orders/:id/giveaway-eligibility
+// @access  Private/Admin
+export const getOrderGiveAwayEligibility = async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const order = await Order.findById(req.params.id).lean();
+    if (!order) return res.status(404).json({ message: 'Order not found' });
+    if ((order as any).status === 'cancelled') {
+      return res.json({ eligible: false, reason: 'Order is cancelled' });
+    }
+    if ((order as any).giveAwayItems?.length) {
+      return res.json({ eligible: false, reason: 'GiveAway already applied for this order' });
+    }
+
+    const storeName = ((order as any).storeName || (order as any).nearestStore || '').toString().trim();
+    if (!storeName) {
+      return res.json({ eligible: false, reason: 'Order store is missing (cannot deduct inventory)' });
+    }
+
+    const now = new Date();
+    const giveAways = await GiveAway.find({ isActive: true }).sort({ createdAt: -1 }).lean();
+    const stats = await loadGiveAwayUserStats((order as any).user, now);
+    let matched: any | null = null;
+    for (const g of giveAways) {
+      if (!isWithinGiveAwayWindow(g, now)) continue;
+      const ok = evaluateGiveAwayConditions((order as any).totalPrice || 0, g, stats);
+      if (ok) {
+        matched = g;
+        break;
+      }
+    }
+    if (!matched) {
+      return res.json({ eligible: false, reason: 'No matching giveaway conditions' });
+    }
+
+    // list current deal-of-the-day products for THIS order store (lean already)
+    const products = await Product.find({ isActive: true }).lean();
+    const dealProducts = products.filter((p: any) => isDealOfDayNowForProductInStore(p, storeName, now));
+
+    return res.json({
+      eligible: true,
+      giveAwayId: matched._id,
+      giveAwayTitle: matched.title,
+      dealProducts: dealProducts.map((p: any) => ({
+        _id: p._id,
+        name: p.name,
+        images: p.images || [],
+        originalPrice: p.originalPrice,
+        offerPrice: p.offerPrice,
+        variants: p.variants || [],
+        // Qty that exists inside the Deal-of-the-Day window for this store (used to cap admin qty)
+        availableQtyByVariantIndex: getDealEligibleQtyByVariantIndexAtStore(p, storeName, now),
+      }))
+    });
+  } catch (error: any) {
+    return res.status(500).json({ message: error.message || 'Failed to check eligibility' });
+  }
+};
+
+// @desc    GiveAway eligibility for many orders (for admin list UI)
+// @route   POST /api/admin/orders/giveaway-eligibility-batch
+// @access  Private/Admin
+export const getOrdersGiveAwayEligibilityBatch = async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const orderIds = req.body?.orderIds;
+    if (!Array.isArray(orderIds) || orderIds.length === 0) {
+      return res.status(400).json({ message: 'orderIds must be a non-empty array' });
+    }
+    const capped = orderIds.slice(0, 500).map((id: any) => String(id));
+
+    const orders = await Order.find({ _id: { $in: capped } }).lean();
+    const now = new Date();
+    const giveAways = await GiveAway.find({ isActive: true }).sort({ createdAt: -1 }).lean();
+
+    const userIds = [...new Set(orders.map((o) => String(o.user)))];
+    const userObjectIds = userIds.map((id) => new mongoose.Types.ObjectId(id));
+
+    const startOfToday = new Date(now);
+    startOfToday.setHours(0, 0, 0, 0);
+    const endOfToday = new Date(now);
+    endOfToday.setHours(23, 59, 59, 999);
+
+    const [ordersTodayAgg, lifetimeAgg, spentAgg] = await Promise.all([
+      Order.aggregate([
+        { $match: { user: { $in: userObjectIds }, createdAt: { $gte: startOfToday, $lte: endOfToday } } },
+        { $group: { _id: '$user', count: { $sum: 1 } } }
+      ]),
+      Order.aggregate([
+        { $match: { user: { $in: userObjectIds } } },
+        { $group: { _id: '$user', count: { $sum: 1 } } }
+      ]),
+      Order.aggregate([
+        { $match: { user: { $in: userObjectIds }, status: { $ne: 'cancelled' } } },
+        { $group: { _id: '$user', total: { $sum: '$totalPrice' } } }
+      ])
+    ]);
+
+    const statsMap = new Map<string, GiveAwayUserStats>();
+    for (const uid of userIds) {
+      const oToday = ordersTodayAgg.find((a) => String(a._id) === uid);
+      const life = lifetimeAgg.find((a) => String(a._id) === uid);
+      const sp = spentAgg.find((a) => String(a._id) === uid);
+      statsMap.set(uid, {
+        ordersTodayCount: oToday?.count || 0,
+        lifetimeOrders: life?.count || 0,
+        lifetimeSpent: sp?.total || 0
+      });
+    }
+
+    const out: Record<
+      string,
+      { eligible: boolean; reason?: string; giveAwayId?: string; giveAwayTitle?: string }
+    > = {};
+
+    for (const order of orders) {
+      const id = order._id.toString();
+      if (order.status === 'cancelled') {
+        out[id] = { eligible: false, reason: 'Order is cancelled' };
+        continue;
+      }
+      if ((order as any).giveAwayItems?.length) {
+        out[id] = { eligible: false, reason: 'GiveAway already applied' };
+        continue;
+      }
+      const storeName = ((order as any).storeName || (order as any).nearestStore || '').toString().trim();
+      if (!storeName) {
+        out[id] = { eligible: false, reason: 'Order store is missing' };
+        continue;
+      }
+      const stats = statsMap.get(String(order.user)) || {
+        ordersTodayCount: 0,
+        lifetimeOrders: 0,
+        lifetimeSpent: 0
+      };
+      let matched: any | null = null;
+      for (const g of giveAways) {
+        if (!isWithinGiveAwayWindow(g, now)) continue;
+        if (evaluateGiveAwayConditions((order as any).totalPrice || 0, g, stats)) {
+          matched = g;
+          break;
+        }
+      }
+      if (!matched) {
+        out[id] = { eligible: false, reason: 'No matching giveaway conditions' };
+      } else {
+        out[id] = {
+          eligible: true,
+          giveAwayId: String(matched._id),
+          giveAwayTitle: matched.title
+        };
+      }
+    }
+
+    for (const rid of capped) {
+      if (out[rid] === undefined) {
+        out[rid] = { eligible: false, reason: 'Order not found' };
+      }
+    }
+
+    return res.json(out);
+  } catch (error: any) {
+    return res.status(500).json({ message: error.message || 'Failed to check eligibility batch' });
+  }
+};
+
+// @desc    Apply giveaway items to a specific order (deduct inventory FIFO)
+// @route   POST /api/admin/orders/:id/apply-giveaway
+// @access  Private/Admin
+export const applyGiveAwayToOrder = async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ message: 'Order not found' });
+    if (order.status === 'cancelled') return res.status(400).json({ message: 'Cannot apply giveaway to cancelled order' });
+    if ((order as any).giveAwayItems?.length) return res.status(400).json({ message: 'GiveAway already applied' });
+
+    const { giveAwayId, items } = req.body || {};
+    if (!giveAwayId) return res.status(400).json({ message: 'giveAwayId is required' });
+    if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ message: 'Select at least one product' });
+
+    const giveAway = await GiveAway.findById(giveAwayId).lean();
+    if (!giveAway || !giveAway.isActive) return res.status(400).json({ message: 'Invalid giveaway' });
+
+    const now = new Date();
+    if (!isWithinGiveAwayWindow(giveAway, now)) return res.status(400).json({ message: 'GiveAway is not active in this time window' });
+
+    const userStats = await loadGiveAwayUserStats(order.user, now);
+    if (!evaluateGiveAwayConditions(order.totalPrice || 0, giveAway, userStats)) {
+      return res.status(400).json({ message: 'Order/user not eligible for this giveaway' });
+    }
+
+    const storeName = (order.storeName || order.nearestStore || '').toString().trim();
+    if (!storeName) return res.status(400).json({ message: 'Order store is missing' });
+
+    const buildOrderItemFromProduct = (p: any, selectedVariantIndex: number, qty: number) => {
+      const name = (() => {
+        if (p.variants && p.variants.length > 0) {
+          const v = p.variants[selectedVariantIndex];
+          if (v) return `${p.name} (${v.value})`;
+        }
+        return p.name;
+      })();
+      return {
+        product: p._id,
+        name: `${name} (GIVEAWAY)`,
+        image: p.images?.[0] || 'no-image',
+        qty,
+        price: 0,
+        selectedVariantIndex
+      };
+    };
+
+    // Deduct FIFO from inventory (same logic as checkout)
+    const allocationsPerGiveAwayItem: { batchNumber: string; quantity: number }[][] = [];
+    const giveAwayOrderItems: any[] = [];
+
+    for (const it of items) {
+      const qty = Math.floor(Number(it.qty));
+      if (!(qty >= 1)) {
+        return res.status(400).json({ message: 'Each item must have quantity at least 1' });
+      }
+      const product = await Product.findById(it.productId || it.product);
+      if (!product) return res.status(400).json({ message: 'Invalid product in selection' });
+
+      const productObj = product.toObject ? product.toObject() : product;
+      if (!isDealOfDayNowForProductInStore(productObj, storeName, now)) {
+        return res.status(400).json({ message: `${product.name} is not in Deal of the Day now for this store` });
+      }
+
+      const selectedVariantIndex = product.variants?.length ? Number(it.selectedVariantIndex ?? 0) : 0;
+      const inv = product.inventory?.find((i: any) => i.location?.toLowerCase() === storeName.toLowerCase());
+      if (!inv) return res.status(400).json({ message: `Inventory not found for ${product.name}` });
+
+      const variants = product.variants || [];
+      const isVariantActive = (i: number) => (variants[i] as any)?.isActive !== false;
+
+      const getTotalQty = () => {
+        if (!isVariantActive(selectedVariantIndex)) return 0;
+        if (inv.batches?.length) {
+          return inv.batches
+            .filter(
+              (b: any) =>
+                b.variantIndex === selectedVariantIndex &&
+                isDealOfDayBatchEligibleForProduct(productObj, b, now)
+            )
+            .reduce((s: number, b: any) => s + (b.quantity || 0), 0);
+        }
+        // Without batch window info, we don't allow deal giveaway
+        return 0;
+      };
+
+      if (getTotalQty() < qty) {
+        return res.status(400).json({ message: `Insufficient stock for ${product.name}` });
+      }
+
+      const allocations: { batchNumber: string; quantity: number }[] = [];
+      if (inv.batches?.length) {
+        let remaining = qty;
+        const batchesForVariant = (inv.batches as any[])
+          .filter(
+            (b: any) =>
+              b.variantIndex === selectedVariantIndex &&
+              isDealOfDayBatchEligibleForProduct(productObj, b, now)
+          )
+          .sort((a: any, b: any) => new Date(a.expiryDate).getTime() - new Date(b.expiryDate).getTime());
+        for (const b of batchesForVariant) {
+          if (remaining <= 0) break;
+          const deduct = Math.min(b.quantity, remaining);
+          // For older batches missing analytics fields, derive them lazily.
+          if ((b as any).initialQuantity == null) {
+            (b as any).initialQuantity = Number(
+              (b.quantity || 0) + ((b as any).soldQuantity || 0) + ((b as any).giveAwayQuantity || 0)
+            );
+          }
+          b.quantity -= deduct;
+          // Track Deal-of-the-day GiveAway impact per batch.
+          // This allows analytics to show GiveAway Units/Value accurately.
+          if (deduct > 0) {
+            (b as any).giveAwayQuantity = Number((b as any).giveAwayQuantity || 0) + deduct;
+          }
+          remaining -= deduct;
+          if (deduct > 0 && b.batchNumber) allocations.push({ batchNumber: b.batchNumber, quantity: deduct });
+        }
+        // Do NOT remove depleted batches. Analytics needs the batch objects to still exist
+        // so GiveAway impact can be counted even when Qty Left becomes 0.
+      } else {
+        // No batch info -> deal giveaway not supported
+        return res.status(400).json({ message: `Insufficient deal stock for ${product.name}` });
+      }
+
+      await product.save();
+
+      const orderItem = buildOrderItemFromProduct(product, selectedVariantIndex, qty);
+      giveAwayOrderItems.push(orderItem);
+      allocationsPerGiveAwayItem.push(allocations);
+    }
+
+    // attach allocations
+    giveAwayOrderItems.forEach((gi, idx) => {
+      (gi as any).batchAllocations = allocationsPerGiveAwayItem[idx] || [];
+    });
+
+    (order as any).giveAwayId = giveAway._id;
+    (order as any).giveAwayItems = giveAwayOrderItems;
+    await order.save();
+
+    return res.json({ message: 'GiveAway applied', order });
+  } catch (error: any) {
+    return res.status(500).json({ message: error.message || 'Failed to apply giveaway' });
+  }
+};
+
+// @desc    List eligible users/orders for a giveaway (today)
+// @route   GET /api/admin/giveaways/:id/eligible-users
+// @access  Private/Admin
+export const getGiveAwayEligibleUsers = async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const giveAway = await GiveAway.findById(req.params.id).lean();
+    if (!giveAway) return res.status(404).json({ message: 'Giveaway not found' });
+
+    const now = new Date();
+    const startOfToday = new Date(now);
+    startOfToday.setHours(0, 0, 0, 0);
+    const endOfToday = new Date(now);
+    endOfToday.setHours(23, 59, 59, 999);
+
+    const minOrderAmountCond = (giveAway.conditions || []).find((c: any) => c.type === 'minOrderAmount' && c.isEnabled !== false);
+    const minOrdersInDayCond = (giveAway.conditions || []).find((c: any) => c.type === 'minOrdersInDay' && c.isEnabled !== false);
+
+    const minOrderAmount = minOrderAmountCond ? Number(minOrderAmountCond.value || 0) : 0;
+    const minOrdersInDay = minOrdersInDayCond ? Number(minOrdersInDayCond.value || 0) : 0;
+
+    // Pull today's orders (exclude cancelled)
+    const todaysOrders = await Order.find({
+      createdAt: { $gte: startOfToday, $lte: endOfToday },
+      status: { $ne: 'cancelled' }
+    })
+      .populate('user', 'username email')
+      .sort({ createdAt: -1 })
+      .lean();
+
+    // Group by user
+    const byUser = new Map<string, any[]>();
+    for (const o of todaysOrders as any[]) {
+      const uid = (o.user?._id || o.user)?.toString?.() || '';
+      if (!uid) continue;
+      if (!byUser.has(uid)) byUser.set(uid, []);
+      byUser.get(uid)!.push(o);
+    }
+
+    const result: any[] = [];
+    for (const [uid, orders] of byUser.entries()) {
+      const orderCount = orders.length;
+      const hasBigOrder = minOrderAmount > 0 ? orders.some(o => Number(o.totalPrice || 0) >= minOrderAmount) : true;
+      const hasDailyCount = minOrdersInDay > 0 ? orderCount >= minOrdersInDay : true;
+
+      if (hasBigOrder && hasDailyCount) {
+        const user = orders[0].user;
+        result.push({
+          user: {
+            _id: user?._id?.toString?.() || uid,
+            username: user?.username,
+            email: user?.email
+          },
+          todayOrderCount: orderCount,
+          eligibleOrders: orders
+            .filter(o => (minOrderAmount > 0 ? Number(o.totalPrice || 0) >= minOrderAmount : true))
+            .slice(0, 5)
+            .map(o => ({
+              _id: o._id,
+              totalPrice: o.totalPrice,
+              createdAt: o.createdAt,
+              status: o.status,
+              deliveryMode: o.deliveryMode
+            }))
+        });
+      }
+    }
+
+    return res.json({ giveAwayId: giveAway._id, count: result.length, users: result });
+  } catch (error: any) {
+    return res.status(500).json({ message: error.message || 'Failed to fetch eligible users' });
+  }
 };
 
 
@@ -1489,6 +2391,22 @@ export const getAdminInvoice = async (
         .text(itemTotalPrice.toFixed(2), amtX, doc.y, { width: 100, align: 'right' });
       doc.moveDown(0.5);
     });
+
+    const giveAwayItems = (order as any).giveAwayItems || [];
+    if (Array.isArray(giveAwayItems) && giveAwayItems.length > 0) {
+      doc.moveDown(0.3);
+      doc
+        .font('Helvetica-Bold')
+        .text('GiveAway — Deal of the Day (complimentary)', itemX, doc.y, { width: 400 });
+      doc.moveDown(0.3);
+      doc.font('Helvetica');
+      giveAwayItems.forEach((item: any) => {
+        doc.text(item.name, itemX, doc.y, { width: 250 })
+          .text(Number(item.qty || 0).toFixed(3), qtyX, doc.y, { width: 50, align: 'right' })
+          .text('0.00', amtX, doc.y, { width: 100, align: 'right' });
+        doc.moveDown(0.5);
+      });
+    }
 
     doc.moveDown(0.5);
     doc.moveTo(itemX, doc.y).lineTo(doc.page.width - 30, doc.y).stroke();

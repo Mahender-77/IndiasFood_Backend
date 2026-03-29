@@ -33,6 +33,7 @@ import {
   createInventoryProduct,
   updateInventoryProduct,
   updateStock,
+  addBatches,
   toggleFlag,
   toggleMostSaled,
   // getAllInventoryProducts,
@@ -45,17 +46,28 @@ import {
   exportSalesByTime,
   adminUpdateOrderStatus,
   getAdminInvoice,
+  getGiveAways,
+  createGiveAway,
+  updateGiveAway,
+  deleteGiveAway,
+  getOrderGiveAwayEligibility,
+  getOrdersGiveAwayEligibilityBatch,
+  applyGiveAwayToOrder,
+  getGiveAwayEligibleUsers,
   
 } from '../controllers/adminController';
 
 const router = express.Router();
 
 // Order management
+router.post('/orders/giveaway-eligibility-batch', protect, admin, getOrdersGiveAwayEligibilityBatch);
 router.route('/orders').get(protect, admin, getAllOrders);
 router.route('/orders/:id/delivery-status').put(protect, admin, adminUpdateOrderStatus);
 router.route('/orders/:id/delivery').put(protect, admin, updateOrderToDelivered);
 router.route('/orders/:id/assign-delivery').put(protect, admin, assignDeliveryPerson);
 router.route('/orders/:id/invoice').get(protect, admin, getAdminInvoice);
+router.route('/orders/:id/giveaway-eligibility').get(protect, admin, getOrderGiveAwayEligibility);
+router.route('/orders/:id/apply-giveaway').post(protect, admin, applyGiveAwayToOrder);
 
 // Customer management
 router.route('/customers').get(protect, admin, getCustomers);
@@ -71,6 +83,14 @@ router.route('/delivery-persons').get(protect, admin, getDeliveryPersons);
 // Delivery Settings
 router.route('/delivery-settings').get(protect, admin, getDeliverySettings).put(protect, admin, updateDeliverySettings);
 router.route('/delivery-locations').get(protect, admin, getDeliveryLocations);
+
+// GiveAway management (explicit handlers — reliable with Express 5)
+router.get('/giveaways', protect, admin, getGiveAways);
+router.post('/giveaways', protect, admin, createGiveAway);
+// More specific path before `/giveaways/:id`
+router.get('/giveaways/:id/eligible-users', protect, admin, getGiveAwayEligibleUsers);
+router.put('/giveaways/:id', protect, admin, updateGiveAway);
+router.delete('/giveaways/:id', protect, admin, deleteGiveAway);
 
 // Product management
 router.route('/products').post(protect, admin, createProduct);
@@ -99,6 +119,7 @@ router.route('/inventory/create-product').post(protect, admin, createInventoryPr
 router.route('/inventory/products/:id').put(protect, admin, updateInventoryProduct).delete(protect, admin, deactivateProduct);
 router.route('/inventory').get(protect, admin, getAllProducts);
 router.route('/inventory/:id/stock').put(protect, admin, updateStock);
+router.route('/inventory/:id/batches').put(protect, admin, addBatches);
 router.route('/inventory/:id/flag').put(protect, admin, toggleFlag);
 router.route('/inventory/:id/most-saled').put(protect, admin, toggleMostSaled);
 router.route('/inventory/:location').get(protect, admin, getInventory);

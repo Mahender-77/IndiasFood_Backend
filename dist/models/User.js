@@ -7,12 +7,13 @@ const mongoose_1 = __importDefault(require("mongoose"));
 const UserSchema = new mongoose_1.default.Schema({
     username: { type: String, required: true, unique: true },
     email: { type: String, required: true, unique: true },
-    password: { type: String, required: true },
-    phone: { type: String },
+    password: { type: String },
+    phone: { type: String, required: true, unique: true },
     resetOTP: { type: String },
     resetOTPExpiry: { type: Date },
     resetOTPAttempts: { type: Number, default: 0 },
     newsletterSubscribed: { type: Boolean, default: false },
+    isPhoneVerified: { type: Boolean, default: false },
     // Enhanced addresses schema with full location data
     addresses: [{
             fullName: { type: String, required: true },
@@ -44,7 +45,12 @@ const UserSchema = new mongoose_1.default.Schema({
                 type: Number,
                 default: 0,
                 min: 0
-            }
+            },
+            price: { type: Number, min: 0 },
+            originalPrice: { type: Number, min: 0 },
+            isDealApplied: { type: Boolean },
+            dealDiscountPercent: { type: Number, min: 0, max: 100 },
+            isDealItem: { type: Boolean, default: false }
         }
     ],
     wishlist: [

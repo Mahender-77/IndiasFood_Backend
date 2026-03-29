@@ -10,12 +10,6 @@ exports.registerSchema = joi_1.default.object({
     email: joi_1.default.string().email().required(),
     password: joi_1.default.string().min(6).required(),
     phone: joi_1.default.string().optional(),
-    addresses: joi_1.default.array().items(joi_1.default.object({
-        address: joi_1.default.string().required(),
-        city: joi_1.default.string().required(),
-        postalCode: joi_1.default.string().required(),
-        country: joi_1.default.string().required(),
-    })).min(1).required(),
     role: joi_1.default.string().valid('user', 'admin', 'delivery').default('user').optional(),
 });
 exports.loginSchema = joi_1.default.object({

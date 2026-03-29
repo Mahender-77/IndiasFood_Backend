@@ -1,15 +1,17 @@
 import express from 'express';
-import authRoutes from './auth';
-import productRoutes from './products';
-import userRoutes from './user';
 import adminRoutes from './admin';
+import authRoutes from './auth';
+import bulkOrderRoutes from './bulkOrder';
 import deliveryRoutes from './delivery';
+import productRoutes from './products';
+import uEngage from './uEngage';
 import uploadRoutes from './upload';
-import uEngage from './uEngage'
+import userRoutes from './user';
 
 const router = express.Router();
 
 router.use('/auth', authRoutes);
+router.use('/bulk-orders', bulkOrderRoutes);
 router.use('/products', productRoutes);
 router.use('/user', userRoutes);
 router.use('/admin', adminRoutes);

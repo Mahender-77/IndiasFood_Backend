@@ -7,6 +7,8 @@ export interface IProductVariant {
   value: string;
   originalPrice: number;
   offerPrice?: number;
+  /** When false, this variant's batch quantity is excluded from total/available stock (not deleted). */
+  isActive?: boolean;
 }
 
 export interface IProductStock {
@@ -15,9 +17,37 @@ export interface IProductStock {
   lowStockThreshold: number;
 }
 
+/** Batch-based inventory entry for tracking stock per batch */
+export interface IProductBatch {
+  batchNumber: string;
+  quantity: number;
+  manufacturingDate: Date;
+  expiryDate: Date;
+  purchasePrice: number;
+  sellingPrice: number;
+  variantIndex: number;
+  /** How many units were deducted from this batch specifically as GiveAway (Deal-of-the-day). */
+  giveAwayQuantity?: number;
+  /** Total units sold (deducted from this batch via paid orders). */
+  soldQuantity?: number;
+  /** Total revenue realised from this batch sales. */
+  revenue?: number;
+  /** Original batch quantity before any deductions (sales + giveaways). */
+  initialQuantity?: number;
+  /** Total/cost value for the whole batch (e.g. total purchase cost of this batch) */
+  batchWholePrice?: number;
+  /** Per-batch Deal of the Day: days before expiry when deal activates */
+  dealTriggerDays?: number;
+  /** Per-batch Deal of the Day: discount percent when in deal period */
+  dealDiscountPercent?: number;
+}
+
 export interface IProductInventory {
-  location: string; // human-readable location name
-  stock: IProductStock[];
+  location: string;
+  /** New: batch-based inventory. Total quantity = sum of batch quantities. */
+  batches?: IProductBatch[];
+  /** Legacy: flat stock (for backward compatibility). Prefer batches for new products. */
+  stock?: IProductStock[];
 }
 
 export interface IProduct {
@@ -25,9 +55,8 @@ export interface IProduct {
   description?: string;
   images: string[];
   videoUrl?: string;
-  shelfLife?: number;
 
-  originLocation?: string; // e.g., Hyderabad, Kakinada
+  originLocation?: string;
 
   /** 🔥 STORE OWNERSHIP */
   store: mongoose.Types.ObjectId;
@@ -39,7 +68,11 @@ export interface IProduct {
 
   isGITagged?: boolean;
   isNewArrival?: boolean;
-  isMostSaled?: boolean; // Add this line
+  isMostSaled?: boolean;
+
+  /** Deal of the Day: when batch is (expiryDate - dealTriggerDays) away from expiry, auto-include with dealDiscountPercent */
+  dealTriggerDays?: number;
+  dealDiscountPercent?: number;
 
   inventory?: IProductInventory[];
 
@@ -49,6 +82,35 @@ export interface IProduct {
 }
 
 /* ---------------- SCHEMA ---------------- */
+
+const ProductBatchSchema = new mongoose.Schema(
+  {
+    batchNumber: { type: String, required: true, trim: true },
+    quantity: { type: Number, required: true, min: 0 },
+    manufacturingDate: { type: Date, required: true },
+    expiryDate: { type: Date, required: true },
+    purchasePrice: { type: Number, required: true, min: 0 },
+    sellingPrice: { type: Number, required: true, min: 0 },
+    variantIndex: { type: Number, required: true, min: 0 },
+    giveAwayQuantity: { type: Number, default: 0, min: 0 },
+    soldQuantity: { type: Number, default: 0, min: 0 },
+    revenue: { type: Number, default: 0, min: 0 },
+    initialQuantity: { type: Number, min: 0, default: undefined },
+    batchWholePrice: { type: Number, min: 0, default: undefined },
+    dealTriggerDays: { type: Number, min: 0, default: undefined },
+    dealDiscountPercent: { type: Number, min: 0, max: 100, default: undefined }
+  },
+  { _id: false }
+);
+
+const ProductStockSchema = new mongoose.Schema(
+  {
+    variantIndex: { type: Number, required: true, min: 0 },
+    quantity: { type: Number, default: 0, min: 0 },
+    lowStockThreshold: { type: Number, default: 5, min: 0 }
+  },
+  { _id: false }
+);
 
 const ProductSchema = new mongoose.Schema<IProduct & Document>(
   {
@@ -83,24 +145,19 @@ const ProductSchema = new mongoose.Schema<IProduct & Document>(
       trim: true
     },
 
-    shelfLife: {
-      type: Number,
-      min: 0
-    },
-
     originLocation: {
       type: String,
       trim: true,
       maxlength: 100,
-      index: true // allows filtering by origin
+      index: true
     },
 
     /* ---------- 🔥 STORE (VERY IMPORTANT) ---------- */
 
     store: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: 'DeliverySettings', // or 'Store' if you split later
-      required: true,
+      ref: 'DeliverySettings',
+      required: false,
       index: true
     },
 
@@ -108,11 +165,7 @@ const ProductSchema = new mongoose.Schema<IProduct & Document>(
 
     originalPrice: {
       type: Number,
-      min: 0,
-      required: function () {
-        // Required ONLY for non-variant products
-        return !this.variants || this.variants.length === 0;
-      }
+      min: 0
     },
 
     offerPrice: {
@@ -142,6 +195,10 @@ const ProductSchema = new mongoose.Schema<IProduct & Document>(
         offerPrice: {
           type: Number,
           min: 0
+        },
+        isActive: {
+          type: Boolean,
+          default: true
         }
       }
     ],
@@ -158,12 +215,24 @@ const ProductSchema = new mongoose.Schema<IProduct & Document>(
       default: false
     },
 
-    isMostSaled: { // Add this block
+    isMostSaled: {
       type: Boolean,
       default: false
     },
 
-    /* ---------- INVENTORY ---------- */
+    dealTriggerDays: {
+      type: Number,
+      min: 0,
+      default: undefined
+    },
+    dealDiscountPercent: {
+      type: Number,
+      min: 0,
+      max: 100,
+      default: undefined
+    },
+
+    /* ---------- INVENTORY (Batch-based + Legacy stock) ---------- */
 
     inventory: [
       {
@@ -173,25 +242,8 @@ const ProductSchema = new mongoose.Schema<IProduct & Document>(
           trim: true,
           lowercase: true
         },
-        stock: [
-          {
-            variantIndex: {
-              type: Number,
-              required: true,
-              min: 0
-            },
-            quantity: {
-              type: Number,
-              default: 0,
-              min: 0
-            },
-            lowStockThreshold: {
-              type: Number,
-              default: 5,
-              min: 0
-            }
-          }
-        ]
+        batches: [ProductBatchSchema],
+        stock: [ProductStockSchema]
       }
     ],
 
@@ -222,17 +274,42 @@ const ProductSchema = new mongoose.Schema<IProduct & Document>(
 
 /* ---------------- VIRTUALS ---------------- */
 
-/** 🔢 Total stock across all locations & variants */
+/** Total stock across all locations & variants (from batches or legacy stock). Excludes inactive variants. */
 ProductSchema.virtual('countInStock').get(function () {
   if (!this.inventory) return 0;
+  const variants = this.variants || [];
+  const isVariantActive = (i: number) => (variants[i] as any)?.isActive !== false;
 
-  return this.inventory.reduce(
-    (total, loc) =>
-      total +
-      loc.stock.reduce((sum, s) => sum + (s.quantity || 0), 0),
-    0
-  );
+  return this.inventory.reduce((total, loc) => {
+    if (loc.batches && loc.batches.length > 0) {
+      return total + loc.batches.reduce((sum, b) => {
+        if (!isVariantActive(b.variantIndex)) return sum;
+        return sum + (b.quantity || 0);
+      }, 0);
+    }
+    if (loc.stock && loc.stock.length > 0) {
+      return total + loc.stock.reduce((sum, s) => {
+        if (!isVariantActive(s.variantIndex)) return sum;
+        return sum + (s.quantity || 0);
+      }, 0);
+    }
+    return total;
+  }, 0);
 });
+
+/* ---------------- HELPER: Get total quantity for variant at location (from batches or stock) */
+export function getVariantQuantityAtLocation(inv: IProductInventory, variantIndex: number): number {
+  if (inv.batches && inv.batches.length > 0) {
+    return inv.batches
+      .filter(b => b.variantIndex === variantIndex)
+      .reduce((sum, b) => sum + (b.quantity || 0), 0);
+  }
+  if (inv.stock && inv.stock.length > 0) {
+    const s = inv.stock.find(st => st.variantIndex === variantIndex);
+    return s ? (s.quantity || 0) : 0;
+  }
+  return 0;
+}
 
 /* ---------------- INDEXES ---------------- */
 
@@ -243,36 +320,26 @@ ProductSchema.index({ name: 'text', description: 'text' });
 
 /* ---------------- VALIDATION ---------------- */
 
-/** 🔐 Prevent invalid variantIndex values */
 ProductSchema.pre('save', function () {
-
-  // 🔥 CASE 1: No variants → allow only variantIndex 0
-  if (!this.variants || this.variants.length === 0) {
-
-    this.inventory?.forEach(loc => {
-      loc.stock.forEach(s => {
-        if (s.variantIndex !== 0) {
-          throw new Error(`Invalid variantIndex ${s.variantIndex} for non-variant product`);
-        }
-      });
-    });
-
-    return;
-  }
-
-  // 🔥 CASE 2: Has variants → validate properly
-  const maxIndex = this.variants.length - 1;
+  const maxVariantIndex = this.variants && this.variants.length > 0 ? this.variants.length - 1 : 0;
 
   this.inventory?.forEach(loc => {
-    loc.stock.forEach(s => {
-      if (s.variantIndex < 0 || s.variantIndex > maxIndex) {
-        throw new Error(`Invalid variantIndex ${s.variantIndex}`);
-      }
-    });
+    if (loc.batches && loc.batches.length > 0) {
+      loc.batches.forEach(b => {
+        if (b.variantIndex < 0 || b.variantIndex > maxVariantIndex) {
+          throw new Error(`Invalid variantIndex ${b.variantIndex} in batch`);
+        }
+      });
+    }
+    if (loc.stock && loc.stock.length > 0) {
+      loc.stock.forEach(s => {
+        if (s.variantIndex < 0 || s.variantIndex > maxVariantIndex) {
+          throw new Error(`Invalid variantIndex ${s.variantIndex} in stock`);
+        }
+      });
+    }
   });
-
 });
-
 
 const Product = mongoose.model<IProduct & Document>('Product', ProductSchema);
 export default Product;

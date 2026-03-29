@@ -3,11 +3,13 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getUserProfile = exports.loginUser = exports.registerUser = void 0;
+exports.resetPassword = exports.loginWithOtp = exports.verifyPhoneOtp = exports.sendPhoneOtp = exports.getUserProfile = exports.loginUser = exports.registerUser = void 0;
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const User_1 = __importDefault(require("../models/User"));
 const authValidation_1 = require("../utils/authValidation");
+const Otp_1 = __importDefault(require("../models/Otp"));
+const axios_1 = __importDefault(require("axios"));
 // Helper to generate JWT token
 const generateToken = (id) => {
     return jsonwebtoken_1.default.sign({ id }, process.env.JWT_SECRET, {
@@ -31,14 +33,33 @@ const generateToken = (id) => {
 // });
 const registerUser = async (req, res) => {
     const { error } = authValidation_1.registerSchema.validate(req.body);
-    if (error)
-        return res.status(400).json({ message: error.details[0].message });
+    if (error) {
+        return res.status(400).json({
+            success: false,
+            message: error.details[0].message
+        });
+    }
     const { username, email, password, phone } = req.body;
     try {
+        // Check if user already exists
+        const existingUser = await User_1.default.findOne({
+            $or: [{ email }, { phone }],
+        });
+        if (existingUser) {
+            if (existingUser.email === email) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Email already registered'
+                });
+            }
+            if (existingUser.phone === phone) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Phone number already registered'
+                });
+            }
+        }
         const hashedPassword = await bcryptjs_1.default.hash(password, 12);
-        const existingUser = await User_1.default.findOne({ email });
-        if (existingUser)
-            return res.status(400).json({ message: 'User exists' });
         const user = new User_1.default({
             username,
             email,
@@ -48,37 +69,59 @@ const registerUser = async (req, res) => {
         await user.save();
         const token = generateToken(user._id.toString());
         res.status(201).json({
+            success: true,
+            message: 'Registration successful',
             token,
             user: {
                 _id: user._id,
                 username: user.username,
                 email: user.email,
+                phone: user.phone,
             },
         });
     }
     catch (error) {
-        res.status(500).json({ message: error.message });
+        res.status(500).json({
+            success: false,
+            message: error.message
+        });
     }
 };
 exports.registerUser = registerUser;
 const loginUser = async (req, res) => {
-    const { error } = authValidation_1.loginSchema.validate(req.body);
-    if (error)
-        return res.status(400).json({ message: error.details[0].message });
-    const { email, password } = req.body;
+    const { phone, password } = req.body;
+    if (!phone || !password) {
+        return res.status(400).json({
+            success: false,
+            message: 'Phone and password are required'
+        });
+    }
     try {
-        const user = await User_1.default.findOne({ email });
+        const user = await User_1.default.findOne({ phone });
         if (!user || !(await bcryptjs_1.default.compare(password, user.password || ''))) {
-            return res.status(400).json({ message: 'Invalid credentials' });
+            return res.status(400).json({
+                success: false,
+                message: 'Invalid credentials'
+            });
         }
         const token = generateToken(user._id.toString());
         res.json({
+            success: true,
+            message: 'Login successful',
             token,
-            user: { _id: user._id, username: user.username, email: user.email },
+            user: {
+                _id: user._id,
+                username: user.username,
+                email: user.email,
+                phone: user.phone,
+            },
         });
     }
     catch (error) {
-        res.status(500).json({ message: error.message });
+        res.status(500).json({
+            success: false,
+            message: error.message
+        });
     }
 };
 exports.loginUser = loginUser;
@@ -99,6 +142,7 @@ const getUserProfile = async (req, res) => {
             isAdmin,
             addresses: user.addresses,
             role: user.role,
+            newsletterSubscribed: user.newsletterSubscribed,
             deliveryProfile: user.deliveryProfile, // Include delivery profile if it exists
         });
     }
@@ -196,3 +240,188 @@ exports.getUserProfile = getUserProfile;
 //     res.status(500).json({ message: 'Failed to reset password' });
 //   }
 // };
+//SMS
+const sendPhoneOtp = async (req, res) => {
+    try {
+        const { phone, type } = req.body;
+        if (!phone || !/^[6-9]\d{9}$/.test(phone)) {
+            return res.status(400).json({ message: "Valid phone number is required" });
+        }
+        const user = await User_1.default.findOne({ phone });
+        // 🔐 FLOW-BASED VALIDATION
+        if (type === 'login' || type === 'forgot') {
+            if (!user) {
+                return res.status(404).json({
+                    message: 'User with this phone number does not exist',
+                });
+            }
+        }
+        if (type === 'register') {
+            if (user) {
+                return res.status(409).json({
+                    message: 'Phone number already registered',
+                });
+            }
+        }
+        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        await Otp_1.default.deleteMany({ phone });
+        await Otp_1.default.create({
+            phone,
+            otp,
+            expiresAt: new Date(Date.now() + 5 * 60 * 1000),
+        });
+        const message = `Hello Foodies! Experience the taste of India. ` +
+            `Your India's Food verification code is ${otp}. ` +
+            `Happy indulging! MAHA FOODS`;
+        const url = `https://smslogin.co/v3/api.php?username=${process.env.SMS_USERNAME}&apikey=${process.env.SMS_API_KEY}&senderid=${process.env.SMS_SENDER_ID}&mobile=91${phone}&message=${encodeURIComponent(message)}&templateid=${process.env.SMS_TEMPLATE_ID}`;
+        await axios_1.default.get(url);
+        return res.status(200).json({
+            success: true,
+            message: "OTP sent successfully",
+        });
+    }
+    catch (error) {
+        console.error("Send OTP Error:", error.message);
+        return res.status(500).json({
+            success: false,
+            message: "Failed to send OTP",
+        });
+    }
+};
+exports.sendPhoneOtp = sendPhoneOtp;
+const verifyPhoneOtp = async (req, res) => {
+    try {
+        const { phone, otp } = req.body;
+        if (!phone || !otp) {
+            return res.status(400).json({
+                success: false,
+                message: "Phone number and OTP are required",
+            });
+        }
+        // Find OTP record
+        const otpRecord = await Otp_1.default.findOne({ phone, otp });
+        if (!otpRecord) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid OTP",
+            });
+        }
+        // Check expiry
+        if (otpRecord.expiresAt < new Date()) {
+            await Otp_1.default.deleteMany({ phone });
+            return res.status(400).json({
+                success: false,
+                message: "OTP has expired",
+            });
+        }
+        // OTP is valid → remove it
+        await Otp_1.default.deleteMany({ phone });
+        return res.status(200).json({
+            success: true,
+            message: "OTP verified successfully",
+        });
+    }
+    catch (error) {
+        console.error("Verify OTP Error:", error.message);
+        return res.status(500).json({
+            success: false,
+            message: "Failed to verify OTP",
+        });
+    }
+};
+exports.verifyPhoneOtp = verifyPhoneOtp;
+const loginWithOtp = async (req, res) => {
+    const { phone, otp } = req.body;
+    if (!phone || !otp) {
+        return res.status(400).json({
+            success: false,
+            message: 'Phone and OTP are required'
+        });
+    }
+    try {
+        // Find OTP record
+        const otpRecord = await Otp_1.default.findOne({ phone, otp });
+        if (!otpRecord) {
+            return res.status(400).json({
+                success: false,
+                message: 'Invalid OTP',
+            });
+        }
+        // Check expiry
+        if (otpRecord.expiresAt < new Date()) {
+            await Otp_1.default.deleteMany({ phone });
+            return res.status(400).json({
+                success: false,
+                message: 'OTP has expired',
+            });
+        }
+        // Find user by phone
+        const user = await User_1.default.findOne({ phone });
+        if (!user) {
+            return res.status(400).json({
+                success: false,
+                message: 'User not found'
+            });
+        }
+        // Delete OTP after successful verification
+        await Otp_1.default.deleteMany({ phone });
+        const token = generateToken(user._id.toString());
+        res.json({
+            success: true,
+            message: 'Login successful',
+            token,
+            user: {
+                _id: user._id,
+                username: user.username,
+                email: user.email,
+                phone: user.phone,
+            },
+        });
+    }
+    catch (error) {
+        res.status(500).json({
+            success: false,
+            message: error.message
+        });
+    }
+};
+exports.loginWithOtp = loginWithOtp;
+// ---------------- RESET PASSWORD ----------------
+const resetPassword = async (req, res) => {
+    const { phone, password } = req.body;
+    if (!phone || !password) {
+        return res.status(400).json({
+            success: false,
+            message: 'Phone and password are required'
+        });
+    }
+    if (password.length < 6) {
+        return res.status(400).json({
+            success: false,
+            message: 'Password must be at least 6 characters'
+        });
+    }
+    try {
+        const user = await User_1.default.findOne({ phone });
+        if (!user) {
+            return res.status(400).json({
+                success: false,
+                message: 'User not found'
+            });
+        }
+        const hashedPassword = await bcryptjs_1.default.hash(password, 12);
+        user.password = hashedPassword;
+        await user.save();
+        res.json({
+            success: true,
+            message: 'Password reset successfully'
+        });
+    }
+    catch (error) {
+        res.status(500).json({
+            success: false,
+            message: error.message
+        });
+    }
+};
+exports.resetPassword = resetPassword;

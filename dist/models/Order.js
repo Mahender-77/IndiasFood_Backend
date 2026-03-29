@@ -23,6 +23,37 @@ const OrderSchema = new mongoose_1.default.Schema({
                 ref: 'Product',
             },
             selectedVariantIndex: { type: Number, default: 0 },
+            batchAllocations: [
+                {
+                    batchNumber: { type: String, default: '' },
+                    quantity: { type: Number, default: 0 },
+                },
+            ],
+        },
+    ],
+    giveAwayId: {
+        type: mongoose_1.default.Schema.Types.ObjectId,
+        ref: 'GiveAway',
+        default: undefined
+    },
+    giveAwayItems: [
+        {
+            name: { type: String, required: true },
+            qty: { type: Number, required: true },
+            image: { type: String, required: true },
+            price: { type: Number, required: true, default: 0 },
+            product: {
+                type: mongoose_1.default.Schema.Types.ObjectId,
+                required: true,
+                ref: 'Product',
+            },
+            selectedVariantIndex: { type: Number, default: 0 },
+            batchAllocations: [
+                {
+                    batchNumber: { type: String, default: '' },
+                    quantity: { type: Number, default: 0 },
+                },
+            ],
         },
     ],
     shippingAddress: {
@@ -55,6 +86,7 @@ const OrderSchema = new mongoose_1.default.Schema({
         required: true,
         default: 0,
     },
+    uengageDeliveryFee: { type: Number, default: 0 },
     totalPrice: {
         type: Number,
         required: true,
@@ -65,6 +97,15 @@ const OrderSchema = new mongoose_1.default.Schema({
         default: 0,
     },
     nearestStore: {
+        type: String,
+        default: '',
+    },
+    store: {
+        type: mongoose_1.default.Schema.Types.ObjectId,
+        ref: 'Store',
+        default: null,
+    },
+    storeName: {
         type: String,
         default: '',
     },
@@ -102,6 +143,11 @@ const OrderSchema = new mongoose_1.default.Schema({
         type: String,
         enum: ['placed', 'confirmed', 'out_for_delivery', 'delivered', 'cancelled'],
         default: 'placed',
+    },
+    deliveryMode: {
+        type: String,
+        enum: ['delivery', 'pickup'],
+        default: 'delivery',
     },
     cancelReason: {
         type: String,

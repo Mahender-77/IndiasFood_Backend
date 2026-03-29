@@ -3,12 +3,14 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.defaultAddress = exports.deleteAddress = exports.UpdateAddress = exports.addNewAddress = exports.getSavedAddress = exports.subscribeNewsletter = exports.checkAvailability = exports.geocodeAddress = exports.reverseGeocode = exports.searchLocation = exports.getDeliverySettings = exports.trackOrderStatus = exports.cancelOrder = exports.getOrderById = exports.getUserOrders = exports.createOrder = exports.toggleWishlist = exports.getUserWishlist = exports.mergeCart = exports.updateCart = exports.getUserCart = void 0;
+exports.defaultAddress = exports.deleteAddress = exports.UpdateAddress = exports.addNewAddress = exports.getSavedAddress = exports.subscribeNewsletter = exports.checkAvailability = exports.geocodeAddress = exports.reverseGeocode = exports.searchLocation = exports.getDeliverySettings = exports.getUserInvoice = exports.trackOrderStatus = exports.cancelOrder = exports.getOrderById = exports.getUserOrders = exports.createOrder = exports.toggleWishlist = exports.getUserWishlist = exports.mergeCart = exports.updateCart = exports.getUserCart = void 0;
 const axios_1 = __importDefault(require("axios"));
 const DeliverySettings_1 = __importDefault(require("../models/DeliverySettings"));
 const Order_1 = __importDefault(require("../models/Order"));
 const Product_1 = __importDefault(require("../models/Product"));
 const User_1 = __importDefault(require("../models/User"));
+const pdfkit_1 = __importDefault(require("pdfkit")); // Import pdfkit
+const path_1 = __importDefault(require("path"));
 // @desc    Get user cart
 // @route   GET /api/user/cart
 // @access  Private
@@ -27,7 +29,8 @@ exports.getUserCart = getUserCart;
 // @access  Private
 const updateCart = async (req, res) => {
     try {
-        const { productId, qty, selectedVariantIndex = 0 } = req.body;
+        const { productId, qty, selectedVariantIndex = 0, price, originalPrice, isDealApplied, dealDiscountPercent, isDealItem: isDealItemBody } = req.body;
+        const incomingIsDealItem = Boolean(isDealItemBody);
         if (!req.user || !req.user._id) {
             return res.status(401).json({ message: 'Not authorized, user ID missing' });
         }
@@ -39,29 +42,55 @@ const updateCart = async (req, res) => {
         if (!product) {
             return res.status(404).json({ message: 'Product not found' });
         }
-        // Find item index considering both productId and selectedVariantIndex
+        const lineIsDeal = (item) => Boolean(item.isDealItem);
+        // Find item: product + variant + deal vs catalog line
         const itemIndex = user.cart.findIndex((item) => {
             const itemProductId = item.product._id ? item.product._id.toString() : item.product.toString();
             const itemVariantIndex = item.selectedVariantIndex !== undefined ? item.selectedVariantIndex : 0;
-            return itemProductId === productId && itemVariantIndex === selectedVariantIndex;
+            return (itemProductId === productId &&
+                itemVariantIndex === selectedVariantIndex &&
+                lineIsDeal(item) === incomingIsDealItem);
         });
+        const applyPricingSnapshot = (target) => {
+            if (price !== undefined && price !== null && Number.isFinite(Number(price))) {
+                target.price = Number(price);
+            }
+            if (originalPrice !== undefined && originalPrice !== null && Number.isFinite(Number(originalPrice))) {
+                target.originalPrice = Number(originalPrice);
+            }
+            if (isDealApplied !== undefined) {
+                target.isDealApplied = Boolean(isDealApplied);
+            }
+            if (dealDiscountPercent !== undefined && dealDiscountPercent !== null) {
+                const d = Number(dealDiscountPercent);
+                if (Number.isFinite(d))
+                    target.dealDiscountPercent = d;
+            }
+            if (isDealItemBody !== undefined) {
+                target.isDealItem = Boolean(isDealItemBody);
+            }
+        };
         if (itemIndex > -1) {
             // Update quantity or remove item
             if (qty > 0) {
                 user.cart[itemIndex].qty = qty;
                 user.cart[itemIndex].selectedVariantIndex = selectedVariantIndex;
+                applyPricingSnapshot(user.cart[itemIndex]);
             }
             else {
                 user.cart.splice(itemIndex, 1);
             }
         }
         else if (qty > 0) {
-            // Add new item with variant index
-            user.cart.push({
+            // Add new item with variant index + optional pricing snapshot
+            const row = {
                 product: productId,
                 qty,
-                selectedVariantIndex
-            });
+                selectedVariantIndex,
+                isDealItem: incomingIsDealItem
+            };
+            applyPricingSnapshot(row);
+            user.cart.push(row);
         }
         else {
             // If trying to remove item that doesn't exist, just return current cart
@@ -83,18 +112,57 @@ const updateCart = async (req, res) => {
 exports.updateCart = updateCart;
 // POST /api/user/cart/merge
 const mergeCart = async (req, res) => {
-    const { items } = req.body; // [{ productId, qty, selectedVariantIndex }]
+    const { items } = req.body; // [{ productId, qty, selectedVariantIndex, price?, ... }]
     const user = await User_1.default.findById(req.user._id);
     if (!user)
         return res.status(404).json({ message: 'User not found' });
     for (const incoming of items) {
+        const mergeIncomingIsDeal = Boolean(incoming.isDealItem);
         const index = user.cart.findIndex((item) => item.product.toString() === incoming.productId &&
-            (item.selectedVariantIndex ?? 0) === (incoming.selectedVariantIndex ?? 0));
+            (item.selectedVariantIndex ?? 0) === (incoming.selectedVariantIndex ?? 0) &&
+            Boolean(item.isDealItem) === mergeIncomingIsDeal);
         if (index > -1) {
             user.cart[index].qty += incoming.qty;
+            if (incoming.price !== undefined && incoming.price !== null && Number.isFinite(Number(incoming.price))) {
+                user.cart[index].price = Number(incoming.price);
+            }
+            if (incoming.originalPrice !== undefined && incoming.originalPrice !== null && Number.isFinite(Number(incoming.originalPrice))) {
+                user.cart[index].originalPrice = Number(incoming.originalPrice);
+            }
+            if (incoming.isDealApplied !== undefined) {
+                user.cart[index].isDealApplied = Boolean(incoming.isDealApplied);
+            }
+            if (incoming.dealDiscountPercent !== undefined && incoming.dealDiscountPercent !== null) {
+                const d = Number(incoming.dealDiscountPercent);
+                if (Number.isFinite(d))
+                    user.cart[index].dealDiscountPercent = d;
+            }
+            if (incoming.isDealItem !== undefined) {
+                user.cart[index].isDealItem = mergeIncomingIsDeal;
+            }
         }
         else {
-            user.cart.push(incoming);
+            const row = {
+                product: incoming.productId,
+                qty: incoming.qty,
+                selectedVariantIndex: incoming.selectedVariantIndex ?? 0,
+                isDealItem: mergeIncomingIsDeal
+            };
+            if (incoming.price !== undefined && incoming.price !== null && Number.isFinite(Number(incoming.price))) {
+                row.price = Number(incoming.price);
+            }
+            if (incoming.originalPrice !== undefined && incoming.originalPrice !== null && Number.isFinite(Number(incoming.originalPrice))) {
+                row.originalPrice = Number(incoming.originalPrice);
+            }
+            if (incoming.isDealApplied !== undefined) {
+                row.isDealApplied = Boolean(incoming.isDealApplied);
+            }
+            if (incoming.dealDiscountPercent !== undefined && incoming.dealDiscountPercent !== null) {
+                const d = Number(incoming.dealDiscountPercent);
+                if (Number.isFinite(d))
+                    row.dealDiscountPercent = d;
+            }
+            user.cart.push(row);
         }
     }
     await user.save();
@@ -144,169 +212,265 @@ exports.toggleWishlist = toggleWishlist;
 // @desc    Create new order
 // @route   POST /api/user/checkout
 // @access  Private
+// @desc    Create new order
+// @route   POST /api/user/checkout
+// @access  Private
 const createOrder = async (req, res) => {
     try {
-        const { orderItems, shippingAddress, paymentMethod, taxPrice, shippingPrice, totalPrice, 
-        // NEW: Address saving fields
-        saveAddress, addressData } = req.body;
+        const { orderItems, shippingAddress, paymentMethod, deliveryMode, shippingPrice = 0, taxPrice = 0 } = req.body;
+        /* ---------------- VALIDATIONS ---------------- */
         if (!orderItems || orderItems.length === 0) {
             return res.status(400).json({ message: 'No order items' });
         }
         if (!shippingAddress || !paymentMethod) {
             return res.status(400).json({ message: 'Missing required fields' });
         }
-        if (!shippingAddress.address || !shippingAddress.city || !shippingAddress.postalCode) {
-            return res.status(400).json({ message: 'Incomplete shipping address' });
+        if (!['delivery', 'pickup'].includes(deliveryMode)) {
+            return res.status(400).json({ message: 'Invalid delivery mode' });
         }
-        /* ---------------- 1️⃣ GET STORE FROM PRODUCT ---------------- */
-        // Assumption: one order = one store
-        const firstItem = orderItems[0];
-        const product = await Product_1.default.findById(firstItem.product).select('store');
-        if (!product) {
-            return res.status(400).json({ message: 'Product not found' });
-        }
-        const storeId = product.store;
-        /* ---------------- 2️⃣ GET STORE DETAILS FROM DELIVERY SETTINGS ---------------- */
-        const deliverySettings = await DeliverySettings_1.default.findOne({
-            storeLocations: {
-                $elemMatch: {
-                    storeId,
-                    isActive: true
-                }
+        /* ---------------- 1️⃣ VALIDATE PRODUCTS + CALCULATE PRICE ---------------- */
+        const enrichedOrderItems = [];
+        let storeId;
+        let store;
+        for (const item of orderItems) {
+            const product = await Product_1.default.findById(item.product);
+            if (!product) {
+                return res.status(400).json({
+                    message: `Product not found: ${item.product}`
+                });
             }
-        });
-        if (!deliverySettings) {
+            let itemName = product.name;
+            // Use first product image when available; fall back to a non-empty
+            // placeholder string so the Order schema's required `image` field passes.
+            const itemImage = product.images?.[0] || 'no-image';
+            /* ---------------- 🔥 VARIANT LOGIC (UPDATED) ---------------- */
+            if (product.variants && product.variants.length > 0) {
+                let selectedIndex = item.selectedVariantIndex;
+                // ✅ AUTO SELECT if only ONE variant
+                if (product.variants.length === 1) {
+                    selectedIndex = 0;
+                }
+                // 🚨 If multiple variants → require selection
+                if (product.variants.length > 1 &&
+                    (typeof selectedIndex !== 'number' || selectedIndex < 0)) {
+                    return res.status(400).json({
+                        message: `Please select a variant for product: ${product.name}`
+                    });
+                }
+                const variant = product.variants[selectedIndex];
+                if (!variant) {
+                    return res.status(400).json({
+                        message: `Invalid variant selected for ${product.name}`
+                    });
+                }
+                itemName = `${product.name} (${variant.value})`;
+                item.selectedVariantIndex = selectedIndex;
+            }
+            else {
+                item.selectedVariantIndex = null;
+            }
+            // Locked line price from cart (deal / snapshot); do not recompute from catalog.
+            if (item.price === undefined || item.price === null) {
+                return res.status(400).json({
+                    message: 'Invalid cart price: missing line price'
+                });
+            }
+            const itemPrice = Number(item.price);
+            if (!Number.isFinite(itemPrice) || itemPrice < 0) {
+                return res.status(400).json({
+                    message: 'Invalid cart price'
+                });
+            }
+            enrichedOrderItems.push({
+                product: product._id,
+                name: itemName,
+                image: itemImage,
+                qty: item.qty,
+                price: itemPrice,
+                selectedVariantIndex: item.selectedVariantIndex
+            });
+            // Prefer the explicit store assignment on the product when present.
+            // If it's missing, we'll resolve delivery settings/store later using a safe fallback.
+            if (!storeId && product.store) {
+                storeId = product.store.toString();
+            }
+        }
+        /* ---------------- 2️⃣ GET STORE DETAILS ---------------- */
+        // Load delivery settings (one doc with all store locations).
+        const deliverySettings = await DeliverySettings_1.default.findOne({});
+        if (!deliverySettings || !deliverySettings.storeLocations?.length) {
             return res.status(400).json({ message: 'Store not found or inactive' });
         }
-        const store = deliverySettings.storeLocations.find((s) => s.storeId.toString() === storeId.toString());
+        const pickupStoreName = (shippingAddress?.city || shippingAddress?.address || '').toString().trim();
+        const isPickup = deliveryMode === 'pickup';
+        // For pickup: use the store selected by the user (sent as shippingAddress.city / address).
+        // For delivery: use product.store or first store.
+        if (isPickup && pickupStoreName) {
+            const match = deliverySettings.storeLocations.find((s) => s.name?.toString().trim().toLowerCase() === pickupStoreName.toLowerCase());
+            if (match && match.isActive !== false) {
+                store = match;
+                storeId = match.storeId?.toString();
+            }
+        }
+        if (!store) {
+            if (isPickup && pickupStoreName) {
+                return res.status(400).json({
+                    message: `Selected pickup store "${pickupStoreName}" not found or inactive`
+                });
+            }
+            // Delivery or no pickup store name: resolve by product store or first location
+            store = storeId
+                ? deliverySettings.storeLocations.find((s) => s.storeId?.toString() === storeId)
+                : null;
+            store = store || deliverySettings.storeLocations[0];
+            storeId = storeId || (store && store.storeId?.toString());
+        }
         if (!store) {
             return res.status(400).json({ message: 'Store location not found' });
         }
+        /* ---------------- CALCULATE TOTAL ---------------- */
+        const itemsPrice = enrichedOrderItems.reduce((acc, item) => acc + item.price * item.qty, 0);
+        // Shipping from frontend (Uengage value)
+        const safeShippingPrice = Number(shippingPrice) || 0;
+        // 🔥 GST from DB (secure)
+        const gstPercentage = deliverySettings.gstPercentage || 0;
+        const calculatedTaxPrice = Number(((itemsPrice * gstPercentage) / 100).toFixed(2));
+        // 💸 What Uengage charges YOU
+        const uengageDeliveryFee = safeShippingPrice;
+        // 💰 What customer pays
+        let finalShippingPrice = safeShippingPrice;
+        // Free delivery check
+        if (deliveryMode === 'delivery' &&
+            deliverySettings.freeDeliveryThreshold > 0 &&
+            itemsPrice >= deliverySettings.freeDeliveryThreshold) {
+            finalShippingPrice = 0;
+        }
+        // 🔥 FINAL TOTAL
+        const calculatedTotalPrice = Number((itemsPrice + finalShippingPrice + calculatedTaxPrice).toFixed(2));
         /* ---------------- 3️⃣ CREATE ORDER ---------------- */
         const order = new Order_1.default({
             user: req.user._id,
-            orderItems,
+            orderItems: enrichedOrderItems,
             shippingAddress,
             paymentMethod,
-            taxPrice: taxPrice || 0,
-            shippingPrice: shippingPrice || 0,
-            totalPrice,
-            status: 'placed'
+            taxPrice: calculatedTaxPrice,
+            shippingPrice: finalShippingPrice,
+            uengageDeliveryFee: uengageDeliveryFee,
+            totalPrice: calculatedTotalPrice,
+            status: 'placed',
+            deliveryMode,
+            store: storeId, // 🔥 ADD THIS
+            storeName: store.name // 🔥 OPTIONAL BUT SMART
         });
         const createdOrder = await order.save();
-        /* ---------------- 4️⃣ CALL U-ENGAGE CREATE TASK ---------------- */
-        const uengagePayload = {
-            storeId: process.env.STORE_ID,
-            order_details: {
-                order_total: totalPrice,
-                paid: paymentMethod !== 'Cash On Delivery',
-                vendor_order_id: createdOrder._id.toString(),
-                order_source: 'web'
-            },
-            pickup_details: {
-                name: store.name,
-                contact_number: store.contact_number,
-                latitude: store.latitude,
-                longitude: store.longitude,
-                address: store.address,
-                city: store.city
-            },
-            drop_details: {
-                name: shippingAddress.fullName,
-                contact_number: shippingAddress.phone,
-                latitude: shippingAddress.latitude,
-                longitude: shippingAddress.longitude,
-                address: shippingAddress.address,
-                city: shippingAddress.city
-            },
-            order_items: orderItems.map((item) => ({
-                id: item.product,
-                quantity: item.qty,
-                price: item.price
-            }))
+        /* ---------------- 4️⃣ DECREMENT STOCK (FIFO: non-expired batches only, earliest expiry first) ---------------- */
+        const nowMs = Date.now();
+        const isBatchNonExpired = (b) => {
+            const exp = b.expiryDate ? new Date(b.expiryDate).getTime() : 0;
+            return exp >= nowMs;
         };
-        let uengageResponse = null;
-        try {
-            uengageResponse = await axios_1.default.post(`${process.env.UENGAGE_BASE}/createTask`, uengagePayload, {
-                headers: {
-                    'Content-Type': 'application/json',
-                    'access-token': process.env.UENGAGE_TOKEN
+        const decrementItems = async (items, allocationsTarget) => {
+            for (let idx = 0; idx < items.length; idx++) {
+                const item = items[idx];
+                const product = await Product_1.default.findById(item.product);
+                if (!product) {
+                    allocationsTarget.push([]);
+                    continue;
                 }
+                const inv = product.inventory?.find((i) => i.location?.toLowerCase() === store.name?.toLowerCase());
+                if (!inv) {
+                    throw new Error(`Inventory not found for ${product.name}`);
+                }
+                const variantIndex = product.variants?.length
+                    ? (item.selectedVariantIndex ?? 0)
+                    : 0;
+                const variants = product.variants || [];
+                const isVariantActive = (i) => variants[i]?.isActive !== false;
+                const getTotalQty = () => {
+                    if (!isVariantActive(variantIndex))
+                        return 0;
+                    if (inv.batches?.length) {
+                        return inv.batches
+                            .filter((b) => b.variantIndex === variantIndex && isBatchNonExpired(b))
+                            .reduce((s, b) => s + (b.quantity || 0), 0);
+                    }
+                    const st = inv.stock?.find((s) => s.variantIndex === variantIndex);
+                    return st ? st.quantity || 0 : 0;
+                };
+                const totalQty = getTotalQty();
+                if (totalQty < item.qty) {
+                    throw new Error(`Insufficient stock for ${item.name}`);
+                }
+                const allocations = [];
+                if (inv.batches?.length) {
+                    let remaining = item.qty;
+                    const batchesForVariant = inv.batches
+                        .filter((b) => b.variantIndex === variantIndex && isBatchNonExpired(b))
+                        .sort((a, b) => new Date(a.expiryDate).getTime() -
+                        new Date(b.expiryDate).getTime());
+                    for (const b of batchesForVariant) {
+                        if (remaining <= 0)
+                            break;
+                        const deduct = Math.min(b.quantity, remaining);
+                        // For older batches missing analytics fields, derive them lazily.
+                        if (b.initialQuantity == null) {
+                            b.initialQuantity = Number((b.quantity || 0) +
+                                (b.soldQuantity || 0) +
+                                (b.giveAwayQuantity || 0));
+                        }
+                        b.quantity -= deduct;
+                        if (deduct > 0) {
+                            b.soldQuantity = Number(b.soldQuantity || 0) + deduct;
+                            const unitPrice = typeof item.price === 'number' ? item.price : (b.sellingPrice || 0);
+                            b.revenue = Number(b.revenue || 0) + deduct * unitPrice;
+                        }
+                        remaining -= deduct;
+                        if (deduct > 0 && b.batchNumber) {
+                            allocations.push({ batchNumber: b.batchNumber, quantity: deduct });
+                        }
+                    }
+                    // Do NOT remove depleted batches. Analytics needs batch objects
+                    // so it can compute sold/revenue correctly even when Qty Left becomes 0.
+                }
+                else {
+                    const st = inv.stock?.find((s) => s.variantIndex === variantIndex);
+                    if (st)
+                        st.quantity -= item.qty;
+                }
+                allocationsTarget.push(allocations);
+                await product.save();
+            }
+        };
+        const batchAllocationsPerItem = [];
+        try {
+            await decrementItems(enrichedOrderItems, batchAllocationsPerItem);
+        }
+        catch (e) {
+            return res.status(400).json({ message: e.message || 'Stock update failed' });
+        }
+        if (createdOrder.orderItems?.length === batchAllocationsPerItem.length) {
+            batchAllocationsPerItem.forEach((allocations, i) => {
+                createdOrder.orderItems[i].batchAllocations = allocations;
             });
-            createdOrder.uengage = {
-                taskId: uengageResponse.data.taskId,
-                vendorOrderId: uengageResponse.data.vendor_order_id,
-                statusCode: uengageResponse.data.status_code || 'CREATED',
-                message: uengageResponse.data.message || 'Task created successfully'
-            };
-            await createdOrder.save();
         }
-        catch (uengageError) {
-            console.error('U-Engage task creation failed:', uengageError.response?.data || uengageError.message);
-            createdOrder.uengage = {
-                statusCode: 'FAILED',
-                message: 'Failed to create delivery task'
-            };
-            await createdOrder.save();
-        }
-        /* ---------------- 5️⃣ CLEAR USER CART ---------------- */
+        await createdOrder.save();
+        /* ---------------- 5️⃣ CLEAR CART ---------------- */
         const user = await User_1.default.findById(req.user._id);
         if (user) {
             user.cart = [];
-            /* ---------------- 🆕 6️⃣ SAVE ADDRESS (NEW FEATURE) ---------------- */
-            // Only save if requested AND address data is provided
-            if (saveAddress && addressData) {
-                try {
-                    // Check if address already exists (by comparing coordinates and address line)
-                    const existingAddress = user.addresses.find(addr => addr.latitude === addressData.latitude &&
-                        addr.longitude === addressData.longitude &&
-                        addr.addressLine1 === addressData.addressLine1);
-                    // Only add if it doesn't already exist
-                    if (!existingAddress) {
-                        // If this is the first address, make it default
-                        const isFirstAddress = user.addresses.length === 0;
-                        // Create new address object
-                        const newAddress = {
-                            fullName: addressData.fullName,
-                            phone: addressData.phone,
-                            addressLine1: addressData.addressLine1,
-                            addressLine2: addressData.addressLine2 || '',
-                            city: addressData.city,
-                            postalCode: addressData.postalCode,
-                            country: addressData.country || 'India',
-                            latitude: addressData.latitude,
-                            longitude: addressData.longitude,
-                            locationName: addressData.locationName || '',
-                            isDefault: isFirstAddress
-                        };
-                        // Push to addresses - Mongoose will auto-generate _id
-                        user.addresses.push(newAddress);
-                        console.log('✅ Address saved to user profile');
-                    }
-                    else {
-                        console.log('ℹ️ Address already exists, skipping save');
-                    }
-                }
-                catch (addressError) {
-                    // Log error but don't fail the order
-                    console.error('⚠️ Error saving address (non-critical):', addressError);
-                }
-            }
             await user.save();
         }
-        /* ---------------- RESPONSE ---------------- */
+        /* ---------------- SUCCESS ---------------- */
         res.status(201).json({
             message: 'Order placed successfully',
-            order: createdOrder,
-            uengage: uengageResponse?.data || null
+            order: createdOrder
         });
     }
     catch (error) {
-        console.error('Error creating order:', error);
+        console.error('❌ Order creation error:', error);
         res.status(500).json({
             message: 'Error creating order',
-            error: error.message,
-            stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+            error: error.message
         });
     }
 };
@@ -354,73 +518,153 @@ exports.getOrderById = getOrderById;
 // @desc    Cancel order
 // @route   PUT /api/user/orders/:id/cancel
 // @access  Private
+// @desc    Cancel order
+// @route   PUT /api/user/orders/:id/cancel
+// @access  Private
 const cancelOrder = async (req, res) => {
     try {
         const { reason } = req.body;
         if (!reason?.trim()) {
-            return res.status(400).json({ message: 'Cancellation reason is required' });
+            return res.status(400).json({
+                message: 'Cancellation reason is required'
+            });
         }
         const order = await Order_1.default.findById(req.params.id);
         if (!order) {
-            return res.status(404).json({ message: 'Order not found' });
-        }
-        // Ownership check
-        if (order.user.toString() !== req.user._id.toString()) {
-            return res.status(403).json({ message: 'Not authorized' });
-        }
-        // Business rules
-        if (order.isDelivered) {
-            return res.status(400).json({ message: 'Cannot cancel delivered order' });
-        }
-        if (order.status === 'out_for_delivery') {
-            return res.status(400).json({
-                message: 'Order is out for delivery. Please contact support to cancel.'
+            return res.status(404).json({
+                message: 'Order not found'
             });
         }
-        if (order.status === 'cancelled') {
-            return res.status(400).json({ message: 'Order already cancelled' });
+        // 🔐 Ownership check
+        if (order.user.toString() !== req.user._id.toString()) {
+            return res.status(403).json({
+                message: 'Not authorized'
+            });
         }
-        /* ---------- CANCEL U-ENGAGE TASK ---------- */
-        let uengageCancelled = false;
-        if (order.uengage?.taskId) {
-            try {
-                const uengagePayload = {
-                    storeId: process.env.STORE_ID,
-                    taskId: order.uengage.taskId
-                };
-                const { data } = await axios_1.default.post(`${process.env.UENGAGE_BASE}/cancelTask`, uengagePayload, {
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'access-token': process.env.UENGAGE_TOKEN
+        // ❌ Already delivered or cancelled
+        if (order.isDelivered || order.status === 'cancelled') {
+            return res.status(400).json({
+                message: 'Order cannot be cancelled'
+            });
+        }
+        /* ======================================================
+           📦 RESTORE STOCK — add back to respective batch(es) (FIFO)
+        ====================================================== */
+        const orderStoreId = order.store?.toString?.();
+        const orderStoreName = (order.storeName || '').toString().trim();
+        // For pickup orders, store name is also stored in shippingAddress.city when order was created.
+        const pickupLocationFromAddress = (order.shippingAddress?.city || order.shippingAddress?.address || '').toString().trim();
+        const allItemsToRestore = [
+            ...(order.orderItems || []),
+            ...(order.giveAwayItems || [])
+        ];
+        for (const item of allItemsToRestore) {
+            const product = await Product_1.default.findById(item.product);
+            if (!product)
+                continue;
+            const variantIndex = typeof item.selectedVariantIndex === 'number'
+                ? item.selectedVariantIndex
+                : 0;
+            // Restore to the SAME location the order was placed from (order's store), not product's default store.
+            let locationName;
+            if (orderStoreName) {
+                // Use stored order store name (e.g. "Test").
+                locationName = orderStoreName.toLowerCase();
+            }
+            else if (order.deliveryMode === 'pickup' && pickupLocationFromAddress) {
+                // Fallback for pickup: store name was set in shippingAddress.city at createOrder.
+                locationName = pickupLocationFromAddress.toLowerCase();
+            }
+            else if (orderStoreId) {
+                const deliverySettings = await DeliverySettings_1.default.findOne({
+                    storeLocations: {
+                        $elemMatch: { storeId: orderStoreId, isActive: true }
                     }
                 });
-                // Save U-Engage response
-                order.uengage.statusCode = data.status_code || 'CANCELLED';
-                order.uengage.message = data.message || 'Order cancelled in U-Engage';
-                uengageCancelled = true;
-                console.log('U-Engage cancellation successful:', data);
+                if (!deliverySettings)
+                    continue;
+                const store = deliverySettings.storeLocations.find((s) => s.storeId?.toString() === orderStoreId);
+                if (!store)
+                    continue;
+                locationName = store.name?.toString?.().trim?.().toLowerCase() || '';
             }
-            catch (uengageError) {
-                console.error('U-Engage cancel failed:', uengageError.response?.data || uengageError.message);
-                // Don't block order cancellation if U-Engage fails
-                order.uengage.statusCode = 'CANCEL_FAILED';
-                order.uengage.message = 'Failed to cancel delivery task';
+            else {
+                locationName = (product.inventory?.[0]?.location?.toString?.() || '').trim().toLowerCase();
+                if (!locationName)
+                    continue;
             }
+            const inventoryLocation = product.inventory?.find((inv) => (inv.location?.toString?.() || '').trim().toLowerCase() === locationName);
+            if (!inventoryLocation)
+                continue;
+            if (Array.isArray(inventoryLocation.batches) && inventoryLocation.batches.length > 0) {
+                // Same variant's batches, sorted by expiry (FIFO — earliest first)
+                const batchesForVariant = inventoryLocation.batches
+                    .filter((b) => b.variantIndex === variantIndex)
+                    .sort((a, b) => new Date(a.expiryDate).getTime() - new Date(b.expiryDate).getTime());
+                if (batchesForVariant.length > 0) {
+                    // Add cancelled qty back into the earliest-expiry batch (respective batch)
+                    batchesForVariant[0].quantity = (batchesForVariant[0].quantity || 0) + item.qty;
+                }
+                else {
+                    // No batch for this variant at this location — create a return batch
+                    const now = new Date();
+                    const v = product.variants?.[variantIndex];
+                    inventoryLocation.batches.push({
+                        batchNumber: `RETURN-${Date.now()}`,
+                        quantity: item.qty,
+                        manufacturingDate: now,
+                        expiryDate: new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000),
+                        purchasePrice: v ? v.originalPrice : (product.originalPrice || 0),
+                        sellingPrice: v ? (v.offerPrice ?? v.originalPrice) : (product.offerPrice ?? product.originalPrice ?? 0),
+                        variantIndex
+                    });
+                }
+            }
+            else if (Array.isArray(inventoryLocation.batches) && inventoryLocation.batches.length === 0) {
+                const now = new Date();
+                const v = product.variants?.[variantIndex];
+                inventoryLocation.batches.push({
+                    batchNumber: `RETURN-${Date.now()}`,
+                    quantity: item.qty,
+                    manufacturingDate: now,
+                    expiryDate: new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000),
+                    purchasePrice: v ? v.originalPrice : (product.originalPrice || 0),
+                    sellingPrice: v ? (v.offerPrice ?? v.originalPrice) : (product.offerPrice ?? product.originalPrice ?? 0),
+                    variantIndex
+                });
+            }
+            else if (Array.isArray(inventoryLocation.stock)) {
+                const stockItem = inventoryLocation.stock.find((s) => s.variantIndex === variantIndex);
+                if (stockItem) {
+                    stockItem.quantity += item.qty;
+                }
+                else {
+                    inventoryLocation.stock.push({
+                        variantIndex,
+                        quantity: item.qty,
+                        lowStockThreshold: 5
+                    });
+                }
+            }
+            await product.save();
         }
-        /* ---------- UPDATE ORDER ---------- */
+        /* ======================================================
+           📝 UPDATE ORDER STATUS
+        ====================================================== */
         order.status = 'cancelled';
         order.cancelReason = reason;
         order.cancelledAt = new Date();
         await order.save();
         return res.json({
             message: 'Order cancelled successfully',
-            uengageCancelled,
             order
         });
     }
     catch (error) {
-        console.error('Cancel order error:', error);
-        return res.status(500).json({ message: 'Failed to cancel order' });
+        console.error('❌ Cancel order error:', error);
+        return res.status(500).json({
+            message: 'Failed to cancel order'
+        });
     }
 };
 exports.cancelOrder = cancelOrder;
@@ -506,6 +750,128 @@ const trackOrderStatus = async (req, res) => {
     }
 };
 exports.trackOrderStatus = trackOrderStatus;
+// @desc    Generate invoice for an order
+// @route   GET /api/user/orders/:id/invoice
+// @access  Private
+const getUserInvoice = async (req, res) => {
+    try {
+        const order = await Order_1.default.findById(req.params.id)
+            .populate('user', 'username email')
+            .exec();
+        if (!order) {
+            return res.status(404).json({ message: 'Order not found' });
+        }
+        // Ownership check
+        const orderUserId = order.user._id
+            ? order.user._id.toString()
+            : order.user.toString();
+        if (orderUserId !== req.user._id.toString()) {
+            return res
+                .status(403)
+                .json({ message: 'Not authorized to view this invoice' });
+        }
+        const doc = new pdfkit_1.default({ margin: 30 }); // Smaller margin for better fit
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename="invoice-${order._id}.pdf"`);
+        doc.pipe(res);
+        // Company Header
+        doc.image(path_1.default.join(__dirname, '../assets/IndiasFood.png'), doc.page.width - 150, 30, { width: 120 });
+        doc.fontSize(16).font('Helvetica-Bold').text('INDIA\'S FOOD', 30, 50);
+        doc.fontSize(10).font('Helvetica').text('A Unit of Maha Food', 30, 70);
+        doc.fontSize(12).font('Helvetica-Bold').text('India\'s True Taste', 30, 85);
+        doc.fontSize(9).font('Helvetica').text('Prasanth Layout, Prasanth Extension,', 30, 105);
+        doc.text('Whitefield, Bengaluru, Karnataka 560066', 30, 117);
+        doc.text('Ph: 9902312314', 30, 129);
+        doc.text('Website: www.indiasfood.com', 30, 141);
+        doc.text('GSTIN: 29ACCFM2331G1ZG', 30, 153);
+        doc.moveDown(2);
+        // Order Details - align right
+        doc.fontSize(10).font('Helvetica').text('Order No :', 300, 170, { width: 100, align: 'right' });
+        doc.font('Helvetica-Bold').text('INV-1001', 400, 170, { width: 150, align: 'right' }); // Assuming static INV-1001 for now
+        const orderDate = order.createdAt
+            ? new Date(order.createdAt).toLocaleDateString('en-IN')
+            : 'N/A';
+        doc.font('Helvetica').text('Date :', 300, 185, { width: 100, align: 'right' });
+        doc.font('Helvetica-Bold').text(orderDate, 400, 185, { width: 150, align: 'right' });
+        doc.moveDown(3);
+        // Items table header
+        const tableTop = doc.y;
+        const itemX = 30;
+        const qtyX = 300;
+        const amtX = 450;
+        doc.font('Helvetica-Bold')
+            .text('Item', itemX, tableTop, { width: 250 })
+            .text('Qty', qtyX, tableTop, { width: 50, align: 'right' })
+            .text('Amt', amtX, tableTop, { width: 100, align: 'right' });
+        doc.moveDown(0.5);
+        doc.moveTo(itemX, doc.y).lineTo(doc.page.width - 30, doc.y).stroke();
+        doc.moveDown(0.5);
+        // Items table rows
+        doc.font('Helvetica');
+        order.orderItems.forEach((item) => {
+            const itemTotalPrice = (item.qty * item.price);
+            doc.text(item.name, itemX, doc.y, { width: 250 })
+                .text(item.qty.toFixed(3), qtyX, doc.y, { width: 50, align: 'right' }) // Display Qty with 3 decimal places
+                .text(itemTotalPrice.toFixed(2), amtX, doc.y, { width: 100, align: 'right' });
+            doc.moveDown(0.5);
+        });
+        const giveAwayItems = order.giveAwayItems || [];
+        if (Array.isArray(giveAwayItems) && giveAwayItems.length > 0) {
+            doc.moveDown(0.3);
+            doc.font('Helvetica-Bold').text('GiveAway', itemX, doc.y, { width: 250 });
+            doc.moveDown(0.3);
+            doc.font('Helvetica');
+            giveAwayItems.forEach((item) => {
+                doc.text(item.name, itemX, doc.y, { width: 250 })
+                    .text(Number(item.qty || 0).toFixed(3), qtyX, doc.y, { width: 50, align: 'right' })
+                    .text('0.00', amtX, doc.y, { width: 100, align: 'right' });
+                doc.moveDown(0.5);
+            });
+        }
+        doc.moveDown(0.5);
+        doc.moveTo(itemX, doc.y).lineTo(doc.page.width - 30, doc.y).stroke();
+        doc.moveDown(0.5);
+        // Totals
+        const subtotal = order.totalPrice - order.shippingPrice - order.taxPrice;
+        doc.font('Helvetica')
+            .text('Sub Total', amtX - 150, doc.y, { width: 100, align: 'right' })
+            .text(subtotal.toFixed(2), amtX, doc.y, { width: 100, align: 'right' });
+        doc.moveDown(0.3);
+        // Assuming a fixed GST of 5% for display purposes from the image,
+        // though the actual order.taxPrice might be different in calculation.
+        // If order.taxPrice represents GST, use that instead.
+        // For now, matching the image:
+        const gstAmount = 50.00; // From the image provided
+        doc.text('GST 5 %', amtX - 150, doc.y, { width: 100, align: 'right' })
+            .text(gstAmount.toFixed(2), amtX, doc.y, { width: 100, align: 'right' });
+        doc.moveDown(0.3);
+        if (order.shippingPrice > 0) {
+            doc.text('Delivery Charges', amtX - 150, doc.y, { width: 100, align: 'right' })
+                .text(order.shippingPrice.toFixed(2), amtX, doc.y, { width: 100, align: 'right' });
+            doc.moveDown(0.3);
+        }
+        doc.moveDown(0.5);
+        doc.font('Helvetica-Bold')
+            .text('TOTAL', amtX - 150, doc.y, { width: 100, align: 'right' })
+            .text(order.totalPrice.toFixed(2), amtX, doc.y, { width: 100, align: 'right' });
+        doc.moveDown(2);
+        // Payment Mode
+        doc.font('Helvetica-Bold').text('Payment Mode : CASH / UPI / CARD', 30, doc.y);
+        doc.moveDown(3);
+        // Footer message
+        doc.fontSize(10).font('Helvetica-Bold').text('More sweetness awaits you – come back soon!', 30, doc.y, { align: 'center' });
+        doc.fontSize(10).font('Helvetica').text('Shop online in Indiasfood.com', 30, doc.y + 15, { align: 'center' });
+        doc.end();
+    }
+    catch (error) {
+        console.error('❌ Get user invoice error:', error);
+        res.status(500).json({
+            message: 'Failed to generate invoice',
+            error: error.message,
+        });
+    }
+};
+exports.getUserInvoice = getUserInvoice;
 // GET DELIVERY SETTINGS (ALL DATA)
 const getDeliverySettings = async (req, res) => {
     try {
@@ -519,6 +885,7 @@ const getDeliverySettings = async (req, res) => {
             pricePerKm: settings.pricePerKm,
             baseCharge: settings.baseCharge,
             freeDeliveryThreshold: settings.freeDeliveryThreshold,
+            gstPercentage: settings.gstPercentage,
             storeLocations: settings.storeLocations
         });
     }
@@ -606,7 +973,6 @@ const reverseGeocode = async (req, res) => {
             lat,
             lng
         };
-        console.log("FINAL parsed address:", responseData);
         res.json(responseData);
     }
     catch (err) {
@@ -679,7 +1045,6 @@ exports.geocodeAddress = geocodeAddress;
 const checkAvailability = async (req, res) => {
     try {
         const { pickup, drop } = req.body;
-        console.log("UEngage", req.body);
         const response = await axios_1.default.post(process.env.UENGAGE_BASE + "/getServiceability", {
             store_id: process.env.STORE_ID,
             pickupDetails: pickup,
@@ -701,26 +1066,19 @@ const checkAvailability = async (req, res) => {
 exports.checkAvailability = checkAvailability;
 // @desc    Subscribe to newsletter
 // @route   POST /api/user/newsletter/subscribe
-// @access  Public (can be used by non-logged-in users)
+// @access  Private (Logged-in users only)
 const subscribeNewsletter = async (req, res) => {
-    const { email } = req.body;
-    if (!email) {
-        return res.status(400).json({ message: 'Email is required' });
-    }
     try {
-        // Check if user exists with this email
-        const user = await User_1.default.findOne({ email });
-        if (user) {
-            // Update existing user's newsletter subscription
-            user.newsletterSubscribed = true;
-            await user.save();
-            res.json({ message: 'Successfully subscribed to newsletter' });
+        const user = await User_1.default.findById(req.user._id);
+        if (!user) {
+            return res.status(404).json({ message: 'User not found' });
         }
-        else {
-            // For non-registered users, we could create a newsletter subscriber record
-            // For now, we'll just return success since this is a simple implementation
-            res.json({ message: 'Successfully subscribed to newsletter' });
+        if (user.newsletterSubscribed) {
+            return res.status(400).json({ message: 'Already subscribed' });
         }
+        user.newsletterSubscribed = true;
+        await user.save();
+        res.json({ message: 'Successfully subscribed to newsletter' });
     }
     catch (error) {
         res.status(500).json({ message: error.message });

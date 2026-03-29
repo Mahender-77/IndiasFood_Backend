@@ -6,6 +6,13 @@ export interface ICartItem {
   product: PopulatedDoc<IProduct & Document>;
   qty: number;
   selectedVariantIndex?: number;
+  /** Locked unit price snapshot (deal / cart) — do not recompute from product. */
+  price?: number;
+  originalPrice?: number;
+  isDealApplied?: boolean;
+  dealDiscountPercent?: number | null;
+  /** When true, this line is deal-priced and distinct from the same product+variant at catalog price. */
+  isDealItem?: boolean;
 }
 
 // Enhanced Address Interface (for input/creation - without _id)
@@ -103,7 +110,12 @@ const UserSchema = new mongoose.Schema<UserDocument, UserModel>({
         type: Number, 
         default: 0, 
         min: 0 
-      }
+      },
+      price: { type: Number, min: 0 },
+      originalPrice: { type: Number, min: 0 },
+      isDealApplied: { type: Boolean },
+      dealDiscountPercent: { type: Number, min: 0, max: 100 },
+      isDealItem: { type: Boolean, default: false }
     }
   ],
   wishlist: [

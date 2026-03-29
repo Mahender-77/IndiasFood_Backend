@@ -31,7 +31,18 @@ export const getUserCart = async (req: AuthenticatedRequest, res: Response) => {
 // @access  Private
 export const updateCart = async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const { productId, qty, selectedVariantIndex = 0 } = req.body;
+    const {
+      productId,
+      qty,
+      selectedVariantIndex = 0,
+      price,
+      originalPrice,
+      isDealApplied,
+      dealDiscountPercent,
+      isDealItem: isDealItemBody
+    } = req.body;
+
+    const incomingIsDealItem = Boolean(isDealItemBody);
 
     if (!req.user || !req.user._id) {
       return res.status(401).json({ message: 'Not authorized, user ID missing' });
@@ -49,30 +60,59 @@ export const updateCart = async (req: AuthenticatedRequest, res: Response) => {
       return res.status(404).json({ message: 'Product not found' });
     }
 
-    // Find item index considering both productId and selectedVariantIndex
+    const lineIsDeal = (item: any) => Boolean(item.isDealItem);
+
+    // Find item: product + variant + deal vs catalog line
     const itemIndex = user.cart.findIndex(
       (item: any) => {
         const itemProductId = item.product._id ? item.product._id.toString() : item.product.toString();
         const itemVariantIndex = item.selectedVariantIndex !== undefined ? item.selectedVariantIndex : 0;
-        return itemProductId === productId && itemVariantIndex === selectedVariantIndex;
+        return (
+          itemProductId === productId &&
+          itemVariantIndex === selectedVariantIndex &&
+          lineIsDeal(item) === incomingIsDealItem
+        );
       }
     );
+
+    const applyPricingSnapshot = (target: any) => {
+      if (price !== undefined && price !== null && Number.isFinite(Number(price))) {
+        target.price = Number(price);
+      }
+      if (originalPrice !== undefined && originalPrice !== null && Number.isFinite(Number(originalPrice))) {
+        target.originalPrice = Number(originalPrice);
+      }
+      if (isDealApplied !== undefined) {
+        target.isDealApplied = Boolean(isDealApplied);
+      }
+      if (dealDiscountPercent !== undefined && dealDiscountPercent !== null) {
+        const d = Number(dealDiscountPercent);
+        if (Number.isFinite(d)) target.dealDiscountPercent = d;
+      }
+      if (isDealItemBody !== undefined) {
+        target.isDealItem = Boolean(isDealItemBody);
+      }
+    };
 
     if (itemIndex > -1) {
       // Update quantity or remove item
       if (qty > 0) {
         user.cart[itemIndex].qty = qty;
         user.cart[itemIndex].selectedVariantIndex = selectedVariantIndex;
+        applyPricingSnapshot(user.cart[itemIndex]);
       } else {
         user.cart.splice(itemIndex, 1);
       }
     } else if (qty > 0) {
-      // Add new item with variant index
-      user.cart.push({ 
-        product: productId as any, 
-        qty, 
-        selectedVariantIndex 
-      });
+      // Add new item with variant index + optional pricing snapshot
+      const row: any = {
+        product: productId as any,
+        qty,
+        selectedVariantIndex,
+        isDealItem: incomingIsDealItem
+      };
+      applyPricingSnapshot(row);
+      user.cart.push(row);
     } else {
       // If trying to remove item that doesn't exist, just return current cart
       await user.populate('cart.product');
@@ -94,22 +134,60 @@ export const updateCart = async (req: AuthenticatedRequest, res: Response) => {
 
 // POST /api/user/cart/merge
 export const mergeCart = async (req: AuthenticatedRequest, res: Response) => {
-  const { items } = req.body; // [{ productId, qty, selectedVariantIndex }]
+  const { items } = req.body; // [{ productId, qty, selectedVariantIndex, price?, ... }]
 
   const user = await User.findById(req.user._id);
   if (!user) return res.status(404).json({ message: 'User not found' });
 
   for (const incoming of items) {
+    const mergeIncomingIsDeal = Boolean(incoming.isDealItem);
+
     const index = user.cart.findIndex(
       (item: any) =>
         item.product.toString() === incoming.productId &&
-        (item.selectedVariantIndex ?? 0) === (incoming.selectedVariantIndex ?? 0)
+        (item.selectedVariantIndex ?? 0) === (incoming.selectedVariantIndex ?? 0) &&
+        Boolean(item.isDealItem) === mergeIncomingIsDeal
     );
 
     if (index > -1) {
       user.cart[index].qty += incoming.qty;
+      if (incoming.price !== undefined && incoming.price !== null && Number.isFinite(Number(incoming.price))) {
+        (user.cart[index] as any).price = Number(incoming.price);
+      }
+      if (incoming.originalPrice !== undefined && incoming.originalPrice !== null && Number.isFinite(Number(incoming.originalPrice))) {
+        (user.cart[index] as any).originalPrice = Number(incoming.originalPrice);
+      }
+      if (incoming.isDealApplied !== undefined) {
+        (user.cart[index] as any).isDealApplied = Boolean(incoming.isDealApplied);
+      }
+      if (incoming.dealDiscountPercent !== undefined && incoming.dealDiscountPercent !== null) {
+        const d = Number(incoming.dealDiscountPercent);
+        if (Number.isFinite(d)) (user.cart[index] as any).dealDiscountPercent = d;
+      }
+      if (incoming.isDealItem !== undefined) {
+        (user.cart[index] as any).isDealItem = mergeIncomingIsDeal;
+      }
     } else {
-      user.cart.push(incoming);
+      const row: any = {
+        product: incoming.productId,
+        qty: incoming.qty,
+        selectedVariantIndex: incoming.selectedVariantIndex ?? 0,
+        isDealItem: mergeIncomingIsDeal
+      };
+      if (incoming.price !== undefined && incoming.price !== null && Number.isFinite(Number(incoming.price))) {
+        row.price = Number(incoming.price);
+      }
+      if (incoming.originalPrice !== undefined && incoming.originalPrice !== null && Number.isFinite(Number(incoming.originalPrice))) {
+        row.originalPrice = Number(incoming.originalPrice);
+      }
+      if (incoming.isDealApplied !== undefined) {
+        row.isDealApplied = Boolean(incoming.isDealApplied);
+      }
+      if (incoming.dealDiscountPercent !== undefined && incoming.dealDiscountPercent !== null) {
+        const d = Number(incoming.dealDiscountPercent);
+        if (Number.isFinite(d)) row.dealDiscountPercent = d;
+      }
+      user.cart.push(row);
     }
   }
 
@@ -210,9 +288,10 @@ export const createOrder = async (req: AuthenticatedRequest, res: Response) => {
         });
       }
 
-      let itemPrice: number;
       let itemName = product.name;
-      const itemImage = product.images?.[0];
+      // Use first product image when available; fall back to a non-empty
+      // placeholder string so the Order schema's required `image` field passes.
+      const itemImage = product.images?.[0] || 'no-image';
 
       /* ---------------- 🔥 VARIANT LOGIC (UPDATED) ---------------- */
 
@@ -243,18 +322,23 @@ export const createOrder = async (req: AuthenticatedRequest, res: Response) => {
           });
         }
 
-        itemPrice = variant.offerPrice ?? variant.originalPrice;
         itemName = `${product.name} (${variant.value})`;
 
         item.selectedVariantIndex = selectedIndex;
       } else {
-        itemPrice = product.offerPrice ?? product.originalPrice;
         item.selectedVariantIndex = null;
       }
 
-      if (itemPrice === undefined || itemPrice === null) {
+      // Locked line price from cart (deal / snapshot); do not recompute from catalog.
+      if (item.price === undefined || item.price === null) {
         return res.status(400).json({
-          message: `Price information missing for product: ${product.name}`
+          message: 'Invalid cart price: missing line price'
+        });
+      }
+      const itemPrice = Number(item.price);
+      if (!Number.isFinite(itemPrice) || itemPrice < 0) {
+        return res.status(400).json({
+          message: 'Invalid cart price'
         });
       }
 
@@ -267,34 +351,52 @@ export const createOrder = async (req: AuthenticatedRequest, res: Response) => {
         selectedVariantIndex: item.selectedVariantIndex
       });
 
-      if (!storeId) {
-        if (!product.store) {
-          return res.status(400).json({
-            message: `Product ${product.name} has no store assigned`
-          });
-        }
+      // Prefer the explicit store assignment on the product when present.
+      // If it's missing, we'll resolve delivery settings/store later using a safe fallback.
+      if (!storeId && product.store) {
         storeId = product.store.toString();
       }
     }
 
     /* ---------------- 2️⃣ GET STORE DETAILS ---------------- */
 
-    const deliverySettings = await DeliverySettings.findOne({
-      storeLocations: {
-        $elemMatch: {
-          storeId,
-          isActive: true
-        }
-      }
-    });
+    // Load delivery settings (one doc with all store locations).
+    const deliverySettings = await DeliverySettings.findOne({});
 
-    if (!deliverySettings) {
+    if (!deliverySettings || !deliverySettings.storeLocations?.length) {
       return res.status(400).json({ message: 'Store not found or inactive' });
     }
 
-    store = deliverySettings.storeLocations.find(
-      (s: any) => s.storeId?.toString() === storeId
-    );
+    const pickupStoreName = (shippingAddress?.city || shippingAddress?.address || '').toString().trim();
+    const isPickup = deliveryMode === 'pickup';
+
+    // For pickup: use the store selected by the user (sent as shippingAddress.city / address).
+    // For delivery: use product.store or first store.
+    if (isPickup && pickupStoreName) {
+      const match = deliverySettings.storeLocations.find(
+        (s: any) => s.name?.toString().trim().toLowerCase() === pickupStoreName.toLowerCase()
+      );
+      if (match && (match as any).isActive !== false) {
+        store = match;
+        storeId = (match as any).storeId?.toString();
+      }
+    }
+
+    if (!store) {
+      if (isPickup && pickupStoreName) {
+        return res.status(400).json({
+          message: `Selected pickup store "${pickupStoreName}" not found or inactive`
+        });
+      }
+      // Delivery or no pickup store name: resolve by product store or first location
+      store = storeId
+        ? deliverySettings.storeLocations.find(
+            (s: any) => s.storeId?.toString() === storeId
+          )
+        : null;
+      store = store || deliverySettings.storeLocations[0];
+      storeId = storeId || (store && (store as any).storeId?.toString());
+    }
 
     if (!store) {
       return res.status(400).json({ message: 'Store location not found' });
@@ -357,52 +459,126 @@ const calculatedTotalPrice = Number(
 
     const createdOrder = await order.save();
 
-    /* ---------------- 4️⃣ DECREMENT STOCK ---------------- */
+    /* ---------------- 4️⃣ DECREMENT STOCK (FIFO: non-expired batches only, earliest expiry first) ---------------- */
 
-    for (const item of enrichedOrderItems) {
-      const product = await Product.findById(item.product);
-      if (!product) continue;
+    const nowMs = Date.now();
+    const isBatchNonExpired = (b: any) => {
+      const exp = b.expiryDate ? new Date(b.expiryDate).getTime() : 0;
+      return exp >= nowMs;
+    };
 
-      const productInventory = product.inventory?.find(
-        (inv: any) =>
-          inv.location.toLowerCase() === store.name.toLowerCase()
-      );
+    const decrementItems = async (
+      items: any[],
+      allocationsTarget: { batchNumber: string; quantity: number }[][]
+    ) => {
+      for (let idx = 0; idx < items.length; idx++) {
+        const item = items[idx];
+        const product = await Product.findById(item.product);
+        if (!product) {
+          allocationsTarget.push([]);
+          continue;
+        }
 
-      if (!productInventory) {
-        return res.status(400).json({
-          message: `Inventory not found for ${product.name}`
-        });
-      }
-
-      if (product.variants && product.variants.length > 0) {
-
-        const stockItem = productInventory.stock.find(
-          (s: any) => s.variantIndex === item.selectedVariantIndex
+        const inv = product.inventory?.find(
+          (i: any) => i.location?.toLowerCase() === store.name?.toLowerCase()
         );
-
-        if (!stockItem || stockItem.quantity < item.qty) {
-          return res.status(400).json({
-            message: `Insufficient stock for ${item.name}`
-          });
+        if (!inv) {
+          throw new Error(`Inventory not found for ${product.name}`);
         }
 
-        stockItem.quantity -= item.qty;
+        const variantIndex = product.variants?.length
+          ? (item.selectedVariantIndex ?? 0)
+          : 0;
+        const variants = product.variants || [];
+        const isVariantActive = (i: number) =>
+          (variants[i] as any)?.isActive !== false;
 
-      } else {
+        const getTotalQty = () => {
+          if (!isVariantActive(variantIndex)) return 0;
+          if (inv.batches?.length) {
+            return inv.batches
+              .filter(
+                (b: any) =>
+                  b.variantIndex === variantIndex && isBatchNonExpired(b)
+              )
+              .reduce((s: number, b: any) => s + (b.quantity || 0), 0);
+          }
+          const st = inv.stock?.find(
+            (s: any) => s.variantIndex === variantIndex
+          );
+          return st ? st.quantity || 0 : 0;
+        };
 
-        const stockItem = productInventory.stock[0];
-
-        if (!stockItem || stockItem.quantity < item.qty) {
-          return res.status(400).json({
-            message: `Insufficient stock for ${item.name}`
-          });
+        const totalQty = getTotalQty();
+        if (totalQty < item.qty) {
+          throw new Error(`Insufficient stock for ${item.name}`);
         }
 
-        stockItem.quantity -= item.qty;
+        const allocations: { batchNumber: string; quantity: number }[] = [];
+
+        if (inv.batches?.length) {
+          let remaining = item.qty;
+          const batchesForVariant = (inv.batches as any[])
+            .filter(
+              (b: any) =>
+                b.variantIndex === variantIndex && isBatchNonExpired(b)
+            )
+            .sort(
+              (a: any, b: any) =>
+                new Date(a.expiryDate).getTime() -
+                new Date(b.expiryDate).getTime()
+            );
+          for (const b of batchesForVariant) {
+            if (remaining <= 0) break;
+            const deduct = Math.min(b.quantity, remaining);
+            // For older batches missing analytics fields, derive them lazily.
+            if ((b as any).initialQuantity == null) {
+              (b as any).initialQuantity = Number(
+                (b.quantity || 0) +
+                  ((b as any).soldQuantity || 0) +
+                  ((b as any).giveAwayQuantity || 0)
+              );
+            }
+            b.quantity -= deduct;
+            if (deduct > 0) {
+              (b as any).soldQuantity = Number((b as any).soldQuantity || 0) + deduct;
+              const unitPrice =
+                typeof item.price === 'number' ? item.price : (b.sellingPrice || 0);
+              (b as any).revenue = Number((b as any).revenue || 0) + deduct * unitPrice;
+            }
+            remaining -= deduct;
+            if (deduct > 0 && b.batchNumber) {
+              allocations.push({ batchNumber: b.batchNumber, quantity: deduct });
+            }
+          }
+          // Do NOT remove depleted batches. Analytics needs batch objects
+          // so it can compute sold/revenue correctly even when Qty Left becomes 0.
+        } else {
+          const st = inv.stock?.find(
+            (s: any) => s.variantIndex === variantIndex
+          );
+          if (st) st.quantity -= item.qty;
+        }
+
+        allocationsTarget.push(allocations);
+        await product.save();
       }
+    };
 
-      await product.save();
+    const batchAllocationsPerItem: { batchNumber: string; quantity: number }[][] = [];
+    try {
+      await decrementItems(enrichedOrderItems, batchAllocationsPerItem);
+    } catch (e: any) {
+      return res.status(400).json({ message: e.message || 'Stock update failed' });
     }
+
+    if (createdOrder.orderItems?.length === batchAllocationsPerItem.length) {
+      batchAllocationsPerItem.forEach((allocations, i) => {
+        (createdOrder.orderItems[i] as any).batchAllocations = allocations;
+      });
+    }
+
+    await createdOrder.save();
 
     /* ---------------- 5️⃣ CLEAR CART ---------------- */
 
@@ -514,60 +690,110 @@ export const cancelOrder = async (
     }
 
     /* ======================================================
-       📦 RESTORE STOCK (PRODUCTION SAFE VERSION)
+       📦 RESTORE STOCK — add back to respective batch(es) (FIFO)
     ====================================================== */
 
-    for (const item of order.orderItems) {
+    const orderStoreId = order.store?.toString?.();
+    const orderStoreName = (order.storeName || '').toString().trim();
+    // For pickup orders, store name is also stored in shippingAddress.city when order was created.
+    const pickupLocationFromAddress = (order.shippingAddress?.city || order.shippingAddress?.address || '').toString().trim();
+
+    const allItemsToRestore = [
+      ...(order.orderItems || []),
+      ...(((order as any).giveAwayItems as any[]) || [])
+    ];
+
+    for (const item of allItemsToRestore) {
 
       const product = await Product.findById(item.product);
 
       if (!product) continue;
-
-      // 🔥 Get store from product (same as order creation)
-      const deliverySettings = await DeliverySettings.findOne({
-        storeLocations: {
-          $elemMatch: {
-            storeId: product.store,
-            isActive: true
-          }
-        }
-      });
-
-      if (!deliverySettings) continue;
-
-      const store = deliverySettings.storeLocations.find(
-        (s: any) =>
-          s.storeId?.toString() === product.store.toString()
-      );
-
-      if (!store) continue;
-
-      const locationName = store.name.toLowerCase();
-
-      const inventoryLocation = product.inventory?.find(
-        (inv: any) =>
-          inv.location.toLowerCase() === locationName
-      );
-
-      if (!inventoryLocation) continue;
 
       const variantIndex =
         typeof item.selectedVariantIndex === 'number'
           ? item.selectedVariantIndex
           : 0;
 
-      const stockItem = inventoryLocation.stock.find(
-        (s: any) => s.variantIndex === variantIndex
+      // Restore to the SAME location the order was placed from (order's store), not product's default store.
+      let locationName: string;
+
+      if (orderStoreName) {
+        // Use stored order store name (e.g. "Test").
+        locationName = orderStoreName.toLowerCase();
+      } else if (order.deliveryMode === 'pickup' && pickupLocationFromAddress) {
+        // Fallback for pickup: store name was set in shippingAddress.city at createOrder.
+        locationName = pickupLocationFromAddress.toLowerCase();
+      } else if (orderStoreId) {
+        const deliverySettings = await DeliverySettings.findOne({
+          storeLocations: {
+            $elemMatch: { storeId: orderStoreId, isActive: true }
+          }
+        });
+        if (!deliverySettings) continue;
+        const store = deliverySettings.storeLocations.find(
+          (s: any) => s.storeId?.toString() === orderStoreId
+        );
+        if (!store) continue;
+        locationName = (store as any).name?.toString?.().trim?.().toLowerCase() || '';
+      } else {
+        locationName = (product.inventory?.[0]?.location?.toString?.() || '').trim().toLowerCase();
+        if (!locationName) continue;
+      }
+
+      const inventoryLocation = product.inventory?.find(
+        (inv: any) => (inv.location?.toString?.() || '').trim().toLowerCase() === locationName
       );
 
-      if (stockItem) {
-        stockItem.quantity += item.qty;
-      } else {
-        inventoryLocation.stock.push({
-          variantIndex,
+      if (!inventoryLocation) continue;
+
+      if (Array.isArray(inventoryLocation.batches) && inventoryLocation.batches.length > 0) {
+        // Same variant's batches, sorted by expiry (FIFO — earliest first)
+        const batchesForVariant = (inventoryLocation.batches as any[])
+          .filter((b: any) => b.variantIndex === variantIndex)
+          .sort((a: any, b: any) => new Date(a.expiryDate).getTime() - new Date(b.expiryDate).getTime());
+
+        if (batchesForVariant.length > 0) {
+          // Add cancelled qty back into the earliest-expiry batch (respective batch)
+          batchesForVariant[0].quantity = (batchesForVariant[0].quantity || 0) + item.qty;
+        } else {
+          // No batch for this variant at this location — create a return batch
+          const now = new Date();
+          const v = product.variants?.[variantIndex];
+          (inventoryLocation.batches as any[]).push({
+            batchNumber: `RETURN-${Date.now()}`,
+            quantity: item.qty,
+            manufacturingDate: now,
+            expiryDate: new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000),
+            purchasePrice: v ? (v as any).originalPrice : (product.originalPrice || 0),
+            sellingPrice: v ? ((v as any).offerPrice ?? (v as any).originalPrice) : (product.offerPrice ?? product.originalPrice ?? 0),
+            variantIndex
+          });
+        }
+      } else if (Array.isArray(inventoryLocation.batches) && inventoryLocation.batches.length === 0) {
+        const now = new Date();
+        const v = product.variants?.[variantIndex];
+        (inventoryLocation.batches as any[]).push({
+          batchNumber: `RETURN-${Date.now()}`,
           quantity: item.qty,
-          lowStockThreshold: 5
+          manufacturingDate: now,
+          expiryDate: new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000),
+          purchasePrice: v ? (v as any).originalPrice : (product.originalPrice || 0),
+          sellingPrice: v ? ((v as any).offerPrice ?? (v as any).originalPrice) : (product.offerPrice ?? product.originalPrice ?? 0),
+          variantIndex
         });
+      } else if (Array.isArray(inventoryLocation.stock)) {
+        const stockItem = inventoryLocation.stock.find(
+          (s: any) => s.variantIndex === variantIndex
+        );
+        if (stockItem) {
+          stockItem.quantity += item.qty;
+        } else {
+          inventoryLocation.stock.push({
+            variantIndex,
+            quantity: item.qty,
+            lowStockThreshold: 5
+          });
+        }
       }
 
       await product.save();
@@ -794,6 +1020,20 @@ export const getUserInvoice = async (
         .text(itemTotalPrice.toFixed(2), amtX, doc.y, { width: 100, align: 'right' });
       doc.moveDown(0.5);
     });
+
+    const giveAwayItems = (order as any).giveAwayItems || [];
+    if (Array.isArray(giveAwayItems) && giveAwayItems.length > 0) {
+      doc.moveDown(0.3);
+      doc.font('Helvetica-Bold').text('GiveAway', itemX, doc.y, { width: 250 });
+      doc.moveDown(0.3);
+      doc.font('Helvetica');
+      giveAwayItems.forEach((item: any) => {
+        doc.text(item.name, itemX, doc.y, { width: 250 })
+          .text(Number(item.qty || 0).toFixed(3), qtyX, doc.y, { width: 50, align: 'right' })
+          .text('0.00', amtX, doc.y, { width: 100, align: 'right' });
+        doc.moveDown(0.5);
+      });
+    }
 
     doc.moveDown(0.5);
     doc.moveTo(itemX, doc.y).lineTo(doc.page.width - 30, doc.y).stroke();
