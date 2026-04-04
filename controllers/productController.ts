@@ -1,21 +1,7 @@
 import { Request, Response } from 'express';
 import Category from '../models/Category';
 import Product from '../models/Product';
-
-const NEW_ARRIVAL_DAYS = 4;
-
-const expireOldNewArrivalFlags = async () => {
-  const cutoffDate = new Date(Date.now() - NEW_ARRIVAL_DAYS * 24 * 60 * 60 * 1000);
-  await Product.updateMany(
-    {
-      isNewArrival: true,
-      createdAt: { $lt: cutoffDate }
-    },
-    {
-      $set: { isNewArrival: false }
-    }
-  );
-};
+import { expireStaleNewArrivalFlags } from '../utils/productNewArrival';
 
 // @desc    Fetch all products with advanced filtering
 // @route   GET /api/products
@@ -411,7 +397,7 @@ export const getGITaggedProducts = async (req: Request, res: Response) => {
 // @access  Public
 export const getNewArrivalProducts = async (req: Request, res: Response) => {
   try {
-    await expireOldNewArrivalFlags();
+    await expireStaleNewArrivalFlags();
 
     const pageSize = 12;
     const page = Number(req.query.pageNumber) || 1;

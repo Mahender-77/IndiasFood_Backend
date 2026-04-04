@@ -50,6 +50,7 @@ const batchInputSchema = Joi.object({
   batchWholePrice: Joi.number().min(0).optional(),
   dealTriggerDays: Joi.number().min(0).optional(),
   dealDiscountPercent: Joi.number().min(0).max(100).optional(),
+  newArrivalUntil: Joi.date().optional().allow(null),
 });
 
 export const addBatchesSchema = Joi.object({

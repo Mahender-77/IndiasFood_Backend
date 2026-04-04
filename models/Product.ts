@@ -40,6 +40,8 @@ export interface IProductBatch {
   dealTriggerDays?: number;
   /** Per-batch Deal of the Day: discount percent when in deal period */
   dealDiscountPercent?: number;
+  /** Last day (inclusive) this batch is treated as a “new arrival” for listing */
+  newArrivalUntil?: Date;
 }
 
 export interface IProductInventory {
@@ -98,7 +100,8 @@ const ProductBatchSchema = new mongoose.Schema(
     initialQuantity: { type: Number, min: 0, default: undefined },
     batchWholePrice: { type: Number, min: 0, default: undefined },
     dealTriggerDays: { type: Number, min: 0, default: undefined },
-    dealDiscountPercent: { type: Number, min: 0, max: 100, default: undefined }
+    dealDiscountPercent: { type: Number, min: 0, max: 100, default: undefined },
+    newArrivalUntil: { type: Date, default: undefined }
   },
   { _id: false }
 );

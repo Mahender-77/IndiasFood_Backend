@@ -6,16 +6,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.getDealOfTheDayProducts = exports.getMostSoldProducts = exports.getNewArrivalProducts = exports.getGITaggedProducts = exports.getAllSubcategories = exports.getSubcategoriesByCategory = exports.getPublicCategories = exports.getSweetsProducts = exports.getProductById = exports.getProducts = void 0;
 const Category_1 = __importDefault(require("../models/Category"));
 const Product_1 = __importDefault(require("../models/Product"));
-const NEW_ARRIVAL_DAYS = 4;
-const expireOldNewArrivalFlags = async () => {
-    const cutoffDate = new Date(Date.now() - NEW_ARRIVAL_DAYS * 24 * 60 * 60 * 1000);
-    await Product_1.default.updateMany({
-        isNewArrival: true,
-        createdAt: { $lt: cutoffDate }
-    }, {
-        $set: { isNewArrival: false }
-    });
-};
+const productNewArrival_1 = require("../utils/productNewArrival");
 // @desc    Fetch all products with advanced filtering
 // @route   GET /api/products
 // @access  Public
@@ -367,7 +358,7 @@ exports.getGITaggedProducts = getGITaggedProducts;
 // @access  Public
 const getNewArrivalProducts = async (req, res) => {
     try {
-        await expireOldNewArrivalFlags();
+        await (0, productNewArrival_1.expireStaleNewArrivalFlags)();
         const pageSize = 12;
         const page = Number(req.query.pageNumber) || 1;
         const searchTerm = (req.query.search || req.query.keyword);
