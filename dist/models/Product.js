@@ -20,7 +20,8 @@ const ProductBatchSchema = new mongoose_1.default.Schema({
     initialQuantity: { type: Number, min: 0, default: undefined },
     batchWholePrice: { type: Number, min: 0, default: undefined },
     dealTriggerDays: { type: Number, min: 0, default: undefined },
-    dealDiscountPercent: { type: Number, min: 0, max: 100, default: undefined }
+    dealDiscountPercent: { type: Number, min: 0, max: 100, default: undefined },
+    newArrivalUntil: { type: Date, default: undefined }
 }, { _id: false });
 const ProductStockSchema = new mongoose_1.default.Schema({
     variantIndex: { type: Number, required: true, min: 0 },

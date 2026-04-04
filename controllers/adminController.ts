@@ -12,26 +12,12 @@ import User from '../models/User'; // Import User model
 import PDFDocument from 'pdfkit'; // Import pdfkit
 
 import { addBatchesSchema, createCategorySchema, createProductBasicSchema, createProductSchema, updateCategorySchema, updateOrderDeliverySchema, updateOrderStatusSchema, updateProductSchema } from '../utils/adminValidation';
+import { expireStaleNewArrivalFlags, syncProductIsNewArrival } from '../utils/productNewArrival';
 
 interface AuthenticatedRequest extends Request {
   user?: any; // Define a more specific User type if available
   files?: Express.Multer.File[]; // Add files property for Multer (after @types/multer install)
 }
-
-const NEW_ARRIVAL_DAYS = 4;
-
-const expireOldNewArrivalFlags = async () => {
-  const cutoffDate = new Date(Date.now() - NEW_ARRIVAL_DAYS * 24 * 60 * 60 * 1000);
-  await Product.updateMany(
-    {
-      isNewArrival: true,
-      createdAt: { $lt: cutoffDate }
-    },
-    {
-      $set: { isNewArrival: false }
-    }
-  );
-};
 
 
 // @desc    Get all orders
@@ -965,7 +951,7 @@ export const getRevenueToday = async (req: AuthenticatedRequest, res: Response) 
 
 export const getAllProducts = async (req: AuthenticatedRequest, res: Response) => {
   try {
-    await expireOldNewArrivalFlags();
+    await expireStaleNewArrivalFlags();
 
     const products = await Product.find()
       .populate('category')
@@ -1144,6 +1130,10 @@ export const addBatches = async (req: Request, res: Response) => {
         entry = { location: locName, batches: [], stock: [] };
         locationMap.set(locName, entry);
       }
+      const newArrivalUntil =
+        b.newArrivalUntil != null && b.newArrivalUntil !== ''
+          ? new Date(b.newArrivalUntil)
+          : undefined;
       entry.batches.push({
         batchNumber: b.batchNumber,
         quantity: Number(b.quantity),
@@ -1160,6 +1150,7 @@ export const addBatches = async (req: Request, res: Response) => {
         batchWholePrice: b.batchWholePrice != null && Number(b.batchWholePrice) >= 0 ? Number(b.batchWholePrice) : undefined,
         dealTriggerDays: b.dealTriggerDays != null ? Number(b.dealTriggerDays) : undefined,
         dealDiscountPercent: b.dealDiscountPercent != null ? Number(b.dealDiscountPercent) : undefined,
+        ...(newArrivalUntil && !isNaN(newArrivalUntil.getTime()) ? { newArrivalUntil } : {}),
       });
     }
 
@@ -1167,6 +1158,7 @@ export const addBatches = async (req: Request, res: Response) => {
     product.inventory = Array.from(locationMap.values());
     product.markModified('inventory');
     product.markModified('variants');
+    syncProductIsNewArrival(product);
     await product.save();
 
     const updated = await Product.findById(productId).populate('category').lean({ virtuals: true });
@@ -1218,7 +1210,8 @@ export const updateStock = async (req: Request, res: Response) => {
       sellingPrice,
       batchWholePrice,
       dealTriggerDays,
-      dealDiscountPercent
+      dealDiscountPercent,
+      newArrivalUntil: newArrivalUntilRaw
     } = req.body;
 
     const variantIndex = typeof variantIndexRaw === 'number' ? variantIndexRaw : Number(variantIndexRaw);
@@ -1257,6 +1250,14 @@ export const updateStock = async (req: Request, res: Response) => {
       : (variant?.offerPrice ?? variant?.originalPrice ?? product.offerPrice ?? product.originalPrice ?? 0);
 
     const useBatches = batchNumber || manufacturingDate || expiryDate;
+    const newArrivalUntilParsed =
+      newArrivalUntilRaw != null && newArrivalUntilRaw !== ''
+        ? new Date(newArrivalUntilRaw)
+        : undefined;
+    const newArrivalUntil =
+      newArrivalUntilParsed && !isNaN(newArrivalUntilParsed.getTime())
+        ? newArrivalUntilParsed
+        : undefined;
     const locName = String(location).trim().toLowerCase();
     if (!locName) {
       return res.status(400).json({ message: 'Location is required' });
@@ -1302,7 +1303,8 @@ export const updateStock = async (req: Request, res: Response) => {
         variantIndex,
         batchWholePrice: batchWholePrice != null && Number(batchWholePrice) >= 0 ? Number(batchWholePrice) : undefined,
         dealTriggerDays: dealTriggerDays != null && Number(dealTriggerDays) >= 0 ? Number(dealTriggerDays) : undefined,
-        dealDiscountPercent: dealDiscountPercent != null && Number(dealDiscountPercent) >= 0 ? Number(dealDiscountPercent) : undefined
+        dealDiscountPercent: dealDiscountPercent != null && Number(dealDiscountPercent) >= 0 ? Number(dealDiscountPercent) : undefined,
+        ...(newArrivalUntil ? { newArrivalUntil } : {}),
       };
       const existingIdx = entry.batches.findIndex(
         (b: any) => b.batchNumber === newBatch.batchNumber && b.variantIndex === variantIndex
@@ -1329,7 +1331,8 @@ export const updateStock = async (req: Request, res: Response) => {
         variantIndex,
         batchWholePrice: batchWholePrice != null && Number(batchWholePrice) >= 0 ? Number(batchWholePrice) : undefined,
         dealTriggerDays: dealTriggerDays != null && Number(dealTriggerDays) >= 0 ? Number(dealTriggerDays) : undefined,
-        dealDiscountPercent: dealDiscountPercent != null && Number(dealDiscountPercent) >= 0 ? Number(dealDiscountPercent) : undefined
+        dealDiscountPercent: dealDiscountPercent != null && Number(dealDiscountPercent) >= 0 ? Number(dealDiscountPercent) : undefined,
+        ...(newArrivalUntil ? { newArrivalUntil } : {}),
       });
       const si = entry.stock.findIndex((s: any) => s.variantIndex === variantIndex);
       if (si >= 0) {
@@ -1341,6 +1344,7 @@ export const updateStock = async (req: Request, res: Response) => {
 
     product.inventory = Array.from(locationMap.values());
     product.markModified('inventory');
+    syncProductIsNewArrival(product);
     await product.save();
 
     res.json({

@@ -51,6 +51,7 @@ const batchInputSchema = joi_1.default.object({
     batchWholePrice: joi_1.default.number().min(0).optional(),
     dealTriggerDays: joi_1.default.number().min(0).optional(),
     dealDiscountPercent: joi_1.default.number().min(0).max(100).optional(),
+    newArrivalUntil: joi_1.default.date().optional().allow(null),
 });
 exports.addBatchesSchema = joi_1.default.object({
     store: joi_1.default.string().pattern(/^[0-9a-fA-F]{24}$/).required(),

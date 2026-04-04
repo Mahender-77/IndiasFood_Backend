@@ -16,16 +16,7 @@ const Product_1 = __importDefault(require("../models/Product"));
 const User_1 = __importDefault(require("../models/User")); // Import User model
 const pdfkit_1 = __importDefault(require("pdfkit")); // Import pdfkit
 const adminValidation_1 = require("../utils/adminValidation");
-const NEW_ARRIVAL_DAYS = 4;
-const expireOldNewArrivalFlags = async () => {
-    const cutoffDate = new Date(Date.now() - NEW_ARRIVAL_DAYS * 24 * 60 * 60 * 1000);
-    await Product_1.default.updateMany({
-        isNewArrival: true,
-        createdAt: { $lt: cutoffDate }
-    }, {
-        $set: { isNewArrival: false }
-    });
-};
+const productNewArrival_1 = require("../utils/productNewArrival");
 // @desc    Get all orders
 // @route   GET /api/admin/orders
 // @access  Private/Admin
@@ -843,7 +834,7 @@ exports.getRevenueToday = getRevenueToday;
 // ==================== INVENTORY MANAGEMENT ====================
 const getAllProducts = async (req, res) => {
     try {
-        await expireOldNewArrivalFlags();
+        await (0, productNewArrival_1.expireStaleNewArrivalFlags)();
         const products = await Product_1.default.find()
             .populate('category')
             .sort({ createdAt: -1 })
@@ -1008,6 +999,9 @@ const addBatches = async (req, res) => {
                 entry = { location: locName, batches: [], stock: [] };
                 locationMap.set(locName, entry);
             }
+            const newArrivalUntil = b.newArrivalUntil != null && b.newArrivalUntil !== ''
+                ? new Date(b.newArrivalUntil)
+                : undefined;
             entry.batches.push({
                 batchNumber: b.batchNumber,
                 quantity: Number(b.quantity),
@@ -1024,12 +1018,14 @@ const addBatches = async (req, res) => {
                 batchWholePrice: b.batchWholePrice != null && Number(b.batchWholePrice) >= 0 ? Number(b.batchWholePrice) : undefined,
                 dealTriggerDays: b.dealTriggerDays != null ? Number(b.dealTriggerDays) : undefined,
                 dealDiscountPercent: b.dealDiscountPercent != null ? Number(b.dealDiscountPercent) : undefined,
+                ...(newArrivalUntil && !isNaN(newArrivalUntil.getTime()) ? { newArrivalUntil } : {}),
             });
         }
         // Replace product.inventory with the new array so Mongoose persists it
         product.inventory = Array.from(locationMap.values());
         product.markModified('inventory');
         product.markModified('variants');
+        (0, productNewArrival_1.syncProductIsNewArrival)(product);
         await product.save();
         const updated = await Product_1.default.findById(productId).populate('category').lean({ virtuals: true });
         return res.status(200).json({ message: 'Batches added', product: updated });
@@ -1065,7 +1061,7 @@ exports.updateInventoryProduct = updateInventoryProduct;
 const updateStock = async (req, res) => {
     try {
         const { id } = req.params;
-        const { location, variantIndex: variantIndexRaw, quantity, batchNumber, manufacturingDate, expiryDate, purchasePrice, sellingPrice, batchWholePrice, dealTriggerDays, dealDiscountPercent } = req.body;
+        const { location, variantIndex: variantIndexRaw, quantity, batchNumber, manufacturingDate, expiryDate, purchasePrice, sellingPrice, batchWholePrice, dealTriggerDays, dealDiscountPercent, newArrivalUntil: newArrivalUntilRaw } = req.body;
         const variantIndex = typeof variantIndexRaw === 'number' ? variantIndexRaw : Number(variantIndexRaw);
         if (!id || !location || (typeof quantity !== 'number' && (quantity === undefined || quantity === null))) {
             return res.status(400).json({
@@ -1098,6 +1094,12 @@ const updateStock = async (req, res) => {
             ? sellingPrice
             : (variant?.offerPrice ?? variant?.originalPrice ?? product.offerPrice ?? product.originalPrice ?? 0);
         const useBatches = batchNumber || manufacturingDate || expiryDate;
+        const newArrivalUntilParsed = newArrivalUntilRaw != null && newArrivalUntilRaw !== ''
+            ? new Date(newArrivalUntilRaw)
+            : undefined;
+        const newArrivalUntil = newArrivalUntilParsed && !isNaN(newArrivalUntilParsed.getTime())
+            ? newArrivalUntilParsed
+            : undefined;
         const locName = String(location).trim().toLowerCase();
         if (!locName) {
             return res.status(400).json({ message: 'Location is required' });
@@ -1141,7 +1143,8 @@ const updateStock = async (req, res) => {
                 variantIndex,
                 batchWholePrice: batchWholePrice != null && Number(batchWholePrice) >= 0 ? Number(batchWholePrice) : undefined,
                 dealTriggerDays: dealTriggerDays != null && Number(dealTriggerDays) >= 0 ? Number(dealTriggerDays) : undefined,
-                dealDiscountPercent: dealDiscountPercent != null && Number(dealDiscountPercent) >= 0 ? Number(dealDiscountPercent) : undefined
+                dealDiscountPercent: dealDiscountPercent != null && Number(dealDiscountPercent) >= 0 ? Number(dealDiscountPercent) : undefined,
+                ...(newArrivalUntil ? { newArrivalUntil } : {}),
             };
             const existingIdx = entry.batches.findIndex((b) => b.batchNumber === newBatch.batchNumber && b.variantIndex === variantIndex);
             if (existingIdx >= 0) {
@@ -1168,7 +1171,8 @@ const updateStock = async (req, res) => {
                 variantIndex,
                 batchWholePrice: batchWholePrice != null && Number(batchWholePrice) >= 0 ? Number(batchWholePrice) : undefined,
                 dealTriggerDays: dealTriggerDays != null && Number(dealTriggerDays) >= 0 ? Number(dealTriggerDays) : undefined,
-                dealDiscountPercent: dealDiscountPercent != null && Number(dealDiscountPercent) >= 0 ? Number(dealDiscountPercent) : undefined
+                dealDiscountPercent: dealDiscountPercent != null && Number(dealDiscountPercent) >= 0 ? Number(dealDiscountPercent) : undefined,
+                ...(newArrivalUntil ? { newArrivalUntil } : {}),
             });
             const si = entry.stock.findIndex((s) => s.variantIndex === variantIndex);
             if (si >= 0) {
@@ -1180,6 +1184,7 @@ const updateStock = async (req, res) => {
         }
         product.inventory = Array.from(locationMap.values());
         product.markModified('inventory');
+        (0, productNewArrival_1.syncProductIsNewArrival)(product);
         await product.save();
         res.json({
             success: true,
